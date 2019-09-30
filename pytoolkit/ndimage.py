@@ -147,7 +147,7 @@ def load(
     return img
 
 
-def save(path: typing.Union[str, pathlib.Path], img: np.ndarray):
+def save(path: typing.Union[str, pathlib.Path], img: np.ndarray, quality: int = 75):
     """画像の保存。
 
     やや余計なお世話だけど0～255にクリッピング(飽和)してから保存する。
@@ -155,17 +155,18 @@ def save(path: typing.Union[str, pathlib.Path], img: np.ndarray):
     Args:
         path: 保存先ファイルパス。途中のディレクトリが無ければ自動的に作成。
         img: 画像のndarray。shape=(height, width, 3)のRGB画像。dtypeはnp.uint8
+        quality: 独自追加 画像の保存クオリティ jpgのみ使用
 
     """
     assert len(img.shape) == 3
     if img.dtype != np.uint8:
         warnings.warn(f"Invalid dtype: {img.dtype} (shape={img.shape})")
-
+    
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-
+    
     img = np.clip(img, 0, 255).astype(np.uint8)
-
+    
     suffix = path.suffix.lower()
     if suffix == ".npy":
         np.save(str(path), img)
@@ -181,7 +182,13 @@ def save(path: typing.Union[str, pathlib.Path], img: np.ndarray):
             pil_img = PIL.Image.fromarray(img, "RGBA")
         else:
             raise RuntimeError(f"Unknown format: shape={img.shape}")
-        pil_img.save(path)
+
+        # {'.jpg','.jpeg','.JPG','.JPEG'}でも良いけれど...
+        jpg_suffix = set(['.jpg', '.jpeg', '.JPG', '.JPEG'])
+        if suffix in jpg_suffix:
+            pil_img.save(path, quality=quality)
+        else:
+            pil_img.save(path)
 
 
 def rotate(
