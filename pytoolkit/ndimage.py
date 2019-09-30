@@ -147,7 +147,7 @@ def load(
     return img
 
 
-def save(path: typing.Union[str, pathlib.Path], img: np.ndarray, quality=75):
+def save(path: typing.Union[str, pathlib.Path], img: np.ndarray, quality: int = 75):
     """画像の保存。
 
     やや余計なお世話だけど0～255にクリッピング(飽和)してから保存する。
@@ -182,8 +182,10 @@ def save(path: typing.Union[str, pathlib.Path], img: np.ndarray, quality=75):
             pil_img = PIL.Image.fromarray(img, "RGBA")
         else:
             raise RuntimeError(f"Unknown format: shape={img.shape}")
-        
-        if suffix == ".jpg" or suffix == ".jpeg":
+
+        # {'.jpg','.jpeg','.JPG','.JPEG'}でも良いけれど...
+        jpg_suffix = set(['.jpg', '.jpeg', '.JPG', '.JPEG'])
+        if suffix in jpg_suffix:
             pil_img.save(path, quality=quality)
         else:
             pil_img.save(path)
