@@ -147,3 +147,18 @@ def encode_rl(mask: np.ndarray) -> str:
     rls = np.where(changes)[0] + 1  # 隣と異なる位置のindex
     rls[1::2] -= rls[::2]  # 開始位置＋サイズ
     return " ".join(str(x) for x in rls)
+
+
+def _binary_array_to_hex(arr: np.ndarray) -> str:
+    """バイナリ配列から16進数の文字列を作るコード
+
+    Args:
+        arr (ndarray): バイナリ形式の配列
+
+    Returns:
+        エンコードされた文字列
+
+    """
+    bit_string = ''.join(str(b) for b in 1 * arr.flatten())
+    width = int(np.ceil(len(bit_string) / 4))
+    return '{:0>{width}x}'.format(int(bit_string, 2), width=width)

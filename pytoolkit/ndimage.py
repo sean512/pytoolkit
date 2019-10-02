@@ -930,3 +930,139 @@ def class_to_mask(classes: np.ndarray, class_colors: np.ndarray) -> np.ndarray:
 
     """
     return np.asarray(class_colors)[classes]
+
+
+def hex_to_imagehash(hexstr: str) -> "Imagehashmanager":
+    """16進数の文字列からImagehashmanagerオブジェクトを作る
+
+    Args:
+        hexstr (str): 16進数の文字列
+
+    Returns:
+        文字列から復元されたImagehashmanager
+
+    """
+    hash_size = int(np.sqrt(len(hexstr) * 4))
+    binary_array = '{:0>{width}b}'.format(int(hexstr, 16), width=hash_size * hash_size)
+    bit_rows = [binary_array[i:i + hash_size] for i in range(0, len(binary_array), hash_size)]
+    hash_array = np.array([[bool(int(d)) for d in row] for row in bit_rows])
+    return Imagehashmanager(hash_array)
+
+
+class Imagehashmanager(object):
+    """
+    imageハッシュ同士の比較や辞書のキーに使える
+    """
+    
+    def __init__(self, binary_array: np.ndarray):
+        self.hash = binary_array
+    
+    def __str__(self):
+        return tk.utils._binary_array_to_hex(self.hash.flatten())
+    
+    def __repr__(self):
+        return repr(self.hash)
+    
+    def __sub__(self, other):
+        if other is None:
+            raise TypeError('Other hash must not be None.')
+        if isinstance(other, Imagehashmanager):
+            if self.hash.size != other.hash.size:
+                raise TypeError('ImageHashes must be of the same shape.', self.hash.shape, other.hash.shape)
+            return np.count_nonzero(self.hash.flatten() != other.hash.flatten())
+        elif isinstance(other, np.ndarray):
+            if self.hash.size != other.size:
+                raise TypeError('ImageHashes must be of the same shape.', self.hash.shape, other.shape)
+            return np.count_nonzero(self.hash.flatten() != other.flatten())
+        else:
+            raise TypeError(f'Other Invalid type:{type(other)}')
+    
+    def __eq__(self, other):
+        if other is None:
+            return False
+        if isinstance(other, Imagehashmanager):
+            return np.array_equal(self.hash.flatten(), other.hash.flatten())
+        elif isinstance(other, np.ndarray):
+            return np.array_equal(self.hash.flatten(), other.flatten())
+        else:
+            raise TypeError(f'Other Invalid type:{type(other)}')
+    
+    def __ne__(self, other):
+        if other is None:
+            return False
+        if not isinstance(other, Imagehashmanager):
+            # ここ1次元ではない場合大丈夫か?
+            return not np.array_equal(self.hash.flatten(), other)
+        else:
+            return not np.array_equal(self.hash.flatten(), other.hash.flatten())
+    
+    def __hash__(self):
+        # this returns a 8 bit integer, intentionally shortening the information
+        return sum([2 ** (i % 8) for i, v in enumerate(self.hash.flatten()) if v])
+        # long ver
+        # return sum([2 ** i for (i, v) in enumerate(self.hash.flatten()) if v])
+
+
+def dhash(image: np.ndarray, hashsize: int=8):
+    """
+    8x8 = 64[bit]
+    Difference Hash computation.
+    following http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html
+
+    computes differences horizontally
+    """
+    assert image.shape[-1] in (1, 3, 4)
+    if image.shape[-1] == 1:
+        pil_img = PIL.Image.fromarray(np.squeeze(image, axis=-1), "L")
+    elif image.shape[2] == 3:
+        pil_img = PIL.Image.fromarray(image, "RGB")
+    elif image.shape[2] == 4:
+        pil_img = PIL.Image.fromarray(image, "RGBA")
+    else:
+        raise RuntimeError(f"Unknown format: shape={image.shape}")
+
+    pil_img = pil_img.convert("L").resize((hashsize + 1, hashsize), PIL.Image.ANTIALIAS)
+    if hashsize < 2:
+        raise ValueError("Hash size must be greater than or equal to 2")
+    
+    resized = np.asarray(pil_img)
+    # compute the (relative) horizontal gradient between adjacent
+    # column pixels
+    diff = resized[:, 1:] > resized[:, :-1]
+    
+    # 念の為
+    diff = np.asarray(diff, dtype=bool)
+    return Imagehashmanager(diff)
+
+
+def dhash_vertical(image: np.ndarray, hashsize: int=8):
+    """
+    8x8 = 64[bit]
+    Difference Hash computation.
+    following http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html
+    computes differences vertically
+    """
+
+    assert image.shape[-1] in (1, 3, 4)
+    if image.shape[-1] == 1:
+        pil_img = PIL.Image.fromarray(np.squeeze(image, axis=-1), "L")
+    elif image.shape[2] == 3:
+        pil_img = PIL.Image.fromarray(image, "RGB")
+    elif image.shape[2] == 4:
+        pil_img = PIL.Image.fromarray(image, "RGBA")
+    else:
+        raise RuntimeError(f"Unknown format: shape={image.shape}")
+
+    pil_img = pil_img.convert("L").resize((hashsize, hashsize + 1), PIL.Image.ANTIALIAS)
+
+    if hashsize < 2:
+        raise ValueError("Hash size must be greater than or equal to 2")
+
+    resized = np.asarray(pil_img)
+    # compute the (relative) vertically gradient between adjacent
+    # column pixels
+    diff = resized[1:, :] > resized[:-1, :]
+    
+    # 念の為
+    diff = np.asarray(diff, dtype=bool)
+    return Imagehashmanager(diff)
