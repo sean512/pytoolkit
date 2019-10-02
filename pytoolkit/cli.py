@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import pathlib
 import typing
 
@@ -31,6 +32,8 @@ class App:
         self.terms: typing.List[typing.Callable[[], None]] = []
         self.commands: typing.Dict[str, typing.Dict[str, typing.Any]] = {}
         self.current_command: typing.Optional[str] = None
+        
+        self.log_option_is=False
 
     def init(self):
         """前処理の追加用デコレーター"""
@@ -49,7 +52,28 @@ class App:
             return func
 
         return _decorator
-
+    
+    def log_option(self,output_path="",append=False,rotate=False,max_bytes=1048576,backup_count=10,stream_level=logging.INFO,
+                   stream_fmt="[%(levelname)-5s] %(message)s",file_level=logging.DEBUG,
+                   file_fmt="%(asctime)s [%(levelname)-5s] %(message)s <%(name)s> %(filename)s:%(lineno)d",
+                   matplotlib_level=logging.WARNING,pil_level=logging.INFO):
+        """
+        run実行時のログの設定、output_pathが空文字列だとself.output_dir / f"{command['func'].__name__}.log"のままにする
+        全体的に美しくないのはゆるして
+        """
+        self.log_option_is = True
+        self.log_output_path = output_path
+        self.log_append = append
+        self.log_rotate = rotate
+        self.log_max_bytes = max_bytes
+        self.log_backup_count = backup_count
+        self.log_stream_level = stream_level
+        self.log_stream_fmt = stream_fmt
+        self.log_file_level = file_level
+        self.log_file_fmt = file_fmt
+        self.log_matplotlib_level = matplotlib_level
+        self.log_pil_level = pil_level
+    
     def command(self, logfile: bool = True, then: str = None):
         """コマンドの追加用デコレーター。
 
@@ -96,13 +120,21 @@ class App:
         while True:
             assert self.current_command is not None
             command = commands[self.current_command]
-
-            # ログ初期化
-            tk.log.init(
-                self.output_dir / f"{command['func'].__name__}.log"
-                if command["logfile"] and self.output_dir is not None
-                else None
-            )
+            
+            # 美しくないけどゆるして
+            if self.log_option_is:
+                final_outputname=self.output_dir / f"{command['func'].__name__}.log" if command["logfile"] and self.output_dir is not None \
+                    else None if len(self.log_output_path) == 0 else self.log_output_path
+                tk.log.init(final_outputname,append=self.log_append,rotate=self.log_rotate,max_bytes=self.log_max_bytes,
+                            backup_count=self.log_backup_count,stream_fmt=self.log_stream_fmt,file_level=self.log_file_level,
+                            file_fmt=self.log_file_fmt,matplotlib_level=self.log_matplotlib_level,pil_level=self.log_pil_level)
+            else:
+                # ログ初期化
+                tk.log.init(
+                    self.output_dir / f"{command['func'].__name__}.log"
+                    if command["logfile"] and self.output_dir is not None
+                    else None
+                )
             # 前処理
             for f in self.inits:
                 with tk.log.trace_scope(f.__qualname__):
