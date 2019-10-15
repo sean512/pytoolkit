@@ -192,6 +192,8 @@ def fit(
     use_multiprocessing: bool = False,
     workers: int = 1,
     max_queue_size: int = 10,
+    use_shuffle: bool = True,
+    horovod_is: bool = True,
 ):
     """独自のtraining loopになる予定の関数。
 
@@ -210,6 +212,8 @@ def fit(
         use_multiprocessing: Trueならマルチプロセス
         workers: ワーカー数
         max_queue_size: キューの最大サイズ
+        use_shuffle: Trueならデータをシャッフルする
+        horovod_is: Trueならhorovod使用時の用のバッチサイズ計算に切り替える
 
     """
     if validation_freq == 0:
@@ -224,9 +228,9 @@ def fit(
         )
     assert (val_set is None) == (val_data_loader is None)
 
-    train_iterator = train_data_loader.iter(train_set, shuffle=True, use_horovod=True)
+    train_iterator = train_data_loader.iter(train_set, shuffle=use_shuffle, use_horovod=horovod_is)
     val_iterator = (
-        val_data_loader.iter(val_set, shuffle=True, use_horovod=True)
+        val_data_loader.iter(val_set, shuffle=use_shuffle, use_horovod=horovod_is)
         if val_set is not None and val_data_loader is not None
         else None
     )
@@ -246,6 +250,7 @@ def fit(
             callbacks=callbacks,
             verbose=verbose if tk.hvd.is_master() else 0,
             initial_epoch=initial_epoch,
+            shuffle=use_shuffle,
             use_multiprocessing=use_multiprocessing,
             workers=workers,
             max_queue_size=max_queue_size,
@@ -275,6 +280,11 @@ def make_validation_freq(
         int(len(val_set) / (len(train_set) * max_val_per_train)),
         1,
     )
+    # validation_freqの値を表示
+    tk.log.get(__name__).info(
+        f"validation_freq: {validation_freq}"
+    )
+    
     # 最後のepochはvalidationしたいので、そこからvalidation_freq毎に。
     validation_freq = list(range(epochs, 0, -validation_freq))
     return validation_freq
