@@ -193,6 +193,7 @@ def fit(
     workers: int = 1,
     max_queue_size: int = 10,
     use_shuffle: bool = True,
+    val_shuffle: bool = False,
     horovod_is: bool = True,
 ):
     """独自のtraining loopになる予定の関数。
@@ -212,7 +213,8 @@ def fit(
         use_multiprocessing: Trueならマルチプロセス
         workers: ワーカー数
         max_queue_size: キューの最大サイズ
-        use_shuffle: Trueならデータをシャッフルする
+        use_shuffle: Trueなら学習用データをシャッフルする。mixup使用時はTrueじゃなければ動かない
+        val_shuffle: Trueなら検証データをシャッフルする。
         horovod_is: Trueならhorovod使用時の用のバッチサイズ計算に切り替える
 
     """
@@ -230,7 +232,7 @@ def fit(
 
     train_iterator = train_data_loader.iter(train_set, shuffle=use_shuffle, use_horovod=horovod_is)
     val_iterator = (
-        val_data_loader.iter(val_set, shuffle=use_shuffle, use_horovod=horovod_is)
+        val_data_loader.iter(val_set, shuffle=val_shuffle, use_horovod=horovod_is)
         if val_set is not None and val_data_loader is not None
         else None
     )
