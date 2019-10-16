@@ -103,3 +103,29 @@ recall = tpr
 binary_accuracy.__name__ = "safe_acc"
 binary_iou.__name__ = "iou"
 categorical_iou.__name__ = "iou"
+
+
+def AUC():
+    def auc(labels, predictions):
+        score_list = []
+        for c in range(K.int_shape(labels)[-1]):
+            with tf.name_scope(f"auc_{c}"):
+                score, up_opt = tf.metrics.auc(labels[:, c], predictions[:, c])
+                K.get_session().run(tf.local_variables_initializer())
+                with tf.control_dependencies([up_opt]):
+                    score = tf.identity(score)
+                score_list.append(score)
+        return score_list
+    
+    return auc
+
+
+def mean_AUC():
+    def mauc(labels, predictions):
+        score, up_opt = tf.metrics.auc(labels, predictions)
+        K.get_session().run(tf.local_variables_initializer())
+        with tf.control_dependencies([up_opt]):
+            score = tf.identity(score)
+        return score
+    
+    return mauc

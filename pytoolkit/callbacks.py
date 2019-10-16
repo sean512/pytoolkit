@@ -238,10 +238,23 @@ class ErrorOnNaN(keras.callbacks.Callback):
 
 
 class AUCCallback(keras.callbacks.Callback):
-    def __init__(self, train_set: tk.data.Dataset,
-                 train_data_loader: tk.data.DataLoader,
-                 val_set: tk.data.Dataset,
-                 val_data_loader: tk.data.DataLoader, class_names: list, use_horovod: bool = False):
+    """学習中に定期的に保存する。
+
+    速度重視でinclude_optimizerはFalse固定。
+
+    Args:
+        train_set (tk.data.Dataset): 保存先パス
+        train_data_loader (tk.data.DataLoader): 保存する回数。epochs % (checkpoints + 1) == 0だとキリのいい感じになる。
+        val_set (tk.data.Dataset):
+        val_data_loader (tk.data.DataLoader):
+        class_name (list):
+        use_horovod (bool):
+
+    """
+    def __init__(self, train_set,
+                 train_data_loader,
+                 val_set,
+                 val_data_loader, class_names, use_horovod = False):
         super().__init__()
         self.train_data = train_set
         self.train_loader = train_data_loader
