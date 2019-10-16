@@ -26,14 +26,19 @@ def print_classification_metrics(
             print_fn(f"Precision: {evals['prec']:.3f}")
             print_fn(f"Recall:    {evals['rec']:.3f}")
             print_fn(f"Logloss:   {evals['logloss']:.3f}")
+            
         elif evals["type"] == "multilabel":
-            print_fn(f"Accuracy:  {evals['acc']:.3f} (Error: {1 - evals['acc']:.3f})")
-            print_fn(f"F1-score:  {evals['f1']:.3f}")
-            print_fn(f"AUC:       {evals['auc']:.3f}")
-            print_fn(f"AP:        {evals['ap']:.3f}")
-            print_fn(f"Precision: {evals['prec']:.3f}")
-            print_fn(f"Recall:    {evals['rec']:.3f}")
-            print_fn(f"Logloss:   {evals['logloss']:.3f}")
+            print_fn(f"Accuracy:   {evals['acc']:.3f} (Error: {1 - evals['acc']:.3f})")
+            print_fn(f"F1-{average:5s}:   {evals['f1']:.3f}")
+            print_fn(f"AUC-{average:5s}:  {evals['auc']:.3f}")
+            if class_names is not None:
+                aucs=sklearn.metrics.roc_auc_score(y_true, proba_pred, average=None)
+                for i,name in enumerate(class_names):
+                    print_fn(f"AUC-{name}:  {aucs[i]:.3f}")
+            print_fn(f"AP-{average:5s}:   {evals['ap']:.3f}")
+            print_fn(f"Precision-{average:5s}: {evals['prec']:.3f}")
+            print_fn(f"Recall-{average:5s}:  {evals['rec']:.3f}")
+            print_fn(f"Logloss:    {evals['logloss']:.3f}")
             print_fn("\n"+sklearn.metrics.classification_report(y_true,  (np.asarray(proba_pred) >= 0.5).astype(np.int32),target_names=class_names  if class_names is not None else None))
             
         else:  # multiclass
@@ -92,12 +97,12 @@ def evaluate_classification(
         y_pred = (np.asarray(proba_pred) >= 0.5).astype(np.int32)
         acc = sklearn.metrics.accuracy_score(y_true, y_pred)
         prec, rec, f1, _ = sklearn.metrics.precision_recall_fscore_support(
-            y_true, y_pred, labels=labels, average=None
+            y_true, y_pred, labels=labels, average=average
         )
         # print(sklearn.metrics.classification_report(y_true, y_pred))
-        auc = sklearn.metrics.roc_auc_score(y_true, proba_pred, average=None)
+        auc = sklearn.metrics.roc_auc_score(y_true, proba_pred, average=average)
         ap = sklearn.metrics.average_precision_score(
-            y_true, y_pred, average=None
+            y_true, y_pred, average=average
         )
         logloss = sklearn.metrics.log_loss(y_true, proba_pred)
         
