@@ -84,10 +84,10 @@ def evaluate_classification(
             "rec": rec,
             "logloss": logloss,
         }
-    elif true_type == "multilabel-indicator":
+    elif true_type == "multilabel-indicator": # multi label
         assert true_type == "multilabel-indicator"
         assert pred_type == "continuous-multioutput"
-        num_classes = true_type.shape[1]
+        num_classes = y_true.shape[1]
         labels = list(range(num_classes))
         y_pred = (np.asarray(proba_pred) >= 0.5).astype(np.int32)
         acc = sklearn.metrics.accuracy_score(y_true, y_pred)
