@@ -238,43 +238,60 @@ class ErrorOnNaN(keras.callbacks.Callback):
 
 
 class AUCCallback(keras.callbacks.Callback):
-    """学習中に定期的に保存する。
-
-    速度重視でinclude_optimizerはFalse固定。
+    """AUCを計算する
 
     Args:
-        train_set (tk.data.Dataset): 保存先パス
-        train_data_loader (tk.data.DataLoader): 保存する回数。epochs % (checkpoints + 1) == 0だとキリのいい感じになる。
         val_set (tk.data.Dataset):
         val_data_loader (tk.data.DataLoader):
         class_name (list):
         use_horovod (bool):
+        check_epoch (int):listもいける
 
     """
-    def __init__(self, train_set,
-                 train_data_loader,
+    def __init__(self,
                  val_set,
-                 val_data_loader, class_names, use_horovod = False):
+                 val_data_loader, class_names, use_horovod = False,check_epoch=2):
         super().__init__()
-        self.train_data = train_set
-        self.train_loader = train_data_loader
         self.val_data = val_set
         self.val_loader = val_data_loader
         self.class_names = class_names
         self.use_horovod = use_horovod
         self.mean_val = 0
         self.val_list = [0 for i in range(len(class_names))]
+        self.num_classes=len(class_names)
+        self.target_epochs=check_epoch
     
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        if 1:#if epoch in self.target_epochs:
+        if epoch in self.target_epochs or epoch % self.target_epochs == 0:
+
+            # if tk.hvd.is_master():
+            #     y_pred_val = self.predict(self.val_data,self.val_loader)
+            #     roc_val = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
+            # tk.hvd.barrier()
+            y_pred_val = self.predict(self.val_data, self.val_loader)
+            meanscore = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
+            score_list = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val,average=None)
+            logs["end_mauc"] = meanscore
+            self.mean_val = meanscore
+            self.val_list = score_list
+            # if hvd_rank==0:
+            #     print(" — end_mauc: {:f}".format(meanscore), end="")  # print(" — val_mauc_e: % f" % (meanscore))
+            for i in range(self.num_classes):
+                logs["end_auc_{}".format(i)] = score_list[i]
+
             if tk.hvd.is_master():
-                y_pred = self.predict(self.train_data,self.train_loader)
-                roc = sklearn.metrics.roc_auc_score(self.train_data.labels, y_pred)
-                y_pred_val = self.predict(self.val_data,self.val_loader)
-                roc_val = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
-                print('\rroc-auc: %s - roc-auc_val: %s' % (str(round(roc, 4)), str(round(roc_val, 4))), end=100 * ' ' + '\n')
+                meanscore = logs.get("end_mauc")
+                print_str=" — end_mauc: {:f}".format(meanscore)
+                for i in range(self.num_classes):
+                    score = logs.get("end_auc_{}".format(i))
+                    print_str.join(" — end_auc_{0}: {1:f}".format(i, score))
+                tk.log.get(__name__).info(print_str)
             tk.hvd.barrier()
+        else:
+            logs["end_mauc"] = self.mean_val
+            for i in range(self.num_classes):
+                logs["end_auc_{}".format(i)] = self.val_list[i]
     
     def predict(self, dataset, data_loader):
         with tk.log.trace_scope("auc_predict"):
@@ -287,10 +304,3 @@ class AUCCallback(keras.callbacks.Callback):
             
             values = tk.hvd.allgather(values) if self.use_horovod else values
             return values
-# def _predict_flow(model, iterator, verbose, on_batch_fn, desc):
-#     on_batch_fn = on_batch_fn or _predict_on_batch
-#     for X, _ in tk.utils.tqdm(
-#         iterator, desc=desc, total=len(iterator), disable=verbose < 1
-#     ):
-#         pred_batch = on_batch_fn(model, X)
-#         yield from pred_batch
