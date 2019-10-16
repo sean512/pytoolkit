@@ -245,7 +245,7 @@ class AUCCallback(keras.callbacks.Callback):
         val_data_loader (tk.data.DataLoader):
         class_name (list):
         use_horovod (bool):
-        check_epoch (int):listもいける
+        check_epoch (int):
 
     """
     def __init__(self,
@@ -259,11 +259,12 @@ class AUCCallback(keras.callbacks.Callback):
         self.mean_val = 0
         self.val_list = [0 for i in range(len(class_names))]
         self.num_classes=len(class_names)
-        self.target_epochs=check_epoch
+        self.call_epochs=check_epoch
     
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        if epoch in self.target_epochs or epoch % self.target_epochs == 0:
+        # if epoch in self.target_epochs
+        if epoch % self.call_epochs == 0:
 
             # if tk.hvd.is_master():
             #     y_pred_val = self.predict(self.val_data,self.val_loader)
