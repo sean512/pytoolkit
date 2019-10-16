@@ -4,15 +4,15 @@ import pathlib
 import time
 
 import numpy as np
+import sklearn
 
 import pytoolkit as tk
-
 from . import K, keras
 
 
 class LearningRateStepDecay(keras.callbacks.Callback):
     """よくある150epoch目と225epoch目に学習率を1/10するコールバック。"""
-
+    
     def __init__(self, reduce_epoch_rates=(0.5, 0.75), factor=0.1, epochs=None):
         super().__init__()
         self.reduce_epoch_rates = reduce_epoch_rates
@@ -20,7 +20,7 @@ class LearningRateStepDecay(keras.callbacks.Callback):
         self.epochs = epochs
         self.start_lr = None
         self.reduce_epochs = None
-
+    
     def on_train_begin(self, logs=None):
         if not hasattr(self.model.optimizer, "lr"):
             raise ValueError('Optimizer must have a "lr" attribute.')
@@ -29,7 +29,7 @@ class LearningRateStepDecay(keras.callbacks.Callback):
         self.reduce_epochs = [
             min(max(int(epochs * r), 1), epochs) for r in self.reduce_epoch_rates
         ]
-
+    
     def on_epoch_begin(self, epoch, logs=None):
         if epoch + 1 in self.reduce_epochs:
             lr1 = K.get_value(self.model.optimizer.lr)
@@ -38,7 +38,7 @@ class LearningRateStepDecay(keras.callbacks.Callback):
             tk.log.get(__name__).info(
                 f"Epoch {epoch + 1}: Learning rate {lr1:.1e} -> {lr2:.1e}"
             )
-
+    
     def on_train_end(self, logs=None):
         # 終わったら戻しておく
         K.set_value(self.model.optimizer.lr, self.start_lr)
@@ -51,7 +51,7 @@ class CosineAnnealing(keras.callbacks.Callback):
         - SGDR: Stochastic Gradient Descent with Warm Restarts <https://arxiv.org/abs/1608.03983>
 
     """
-
+    
     def __init__(self, factor=0.01, epochs=None, warmup_epochs=5):
         assert factor < 1
         super().__init__()
@@ -59,12 +59,12 @@ class CosineAnnealing(keras.callbacks.Callback):
         self.epochs = epochs
         self.warmup_epochs = warmup_epochs
         self.start_lr = None
-
+    
     def on_train_begin(self, logs=None):
         if not hasattr(self.model.optimizer, "lr"):
             raise ValueError('Optimizer must have a "lr" attribute.')
         self.start_lr = float(K.get_value(self.model.optimizer.lr))
-
+    
     def on_epoch_begin(self, epoch, logs=None):
         lr_max = self.start_lr
         lr_min = self.start_lr * self.factor
@@ -74,7 +74,7 @@ class CosineAnnealing(keras.callbacks.Callback):
             r = (epoch + 1) / (self.epochs or self.params["epochs"])
             lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + np.cos(np.pi * r))
         K.set_value(self.model.optimizer.lr, float(lr))
-
+    
     def on_train_end(self, logs=None):
         # 終わったら戻しておく
         K.set_value(self.model.optimizer.lr, self.start_lr)
@@ -88,7 +88,7 @@ class TSVLogger(keras.callbacks.Callback):
         append: 追記するのか否か。
 
     """
-
+    
     def __init__(self, filename, append=False, enabled=None):
         super().__init__()
         self.filename = pathlib.Path(filename)
@@ -97,7 +97,7 @@ class TSVLogger(keras.callbacks.Callback):
         self.log_file = None
         self.log_writer = None
         self.epoch_start_time = None
-
+    
     def on_train_begin(self, logs=None):
         if self.enabled:
             self.filename.parent.mkdir(parents=True, exist_ok=True)
@@ -113,22 +113,22 @@ class TSVLogger(keras.callbacks.Callback):
         else:
             self.log_file = None
             self.log_writer = None
-
+    
     def on_epoch_begin(self, epoch, logs=None):
         self.epoch_start_time = time.time()
-
+    
     def on_epoch_end(self, epoch, logs=None):
         assert self.epoch_start_time is not None
         logs = logs or {}
         logs["lr"] = K.get_value(self.model.optimizer.lr)
         elapsed_time = time.time() - self.epoch_start_time
-
+        
         def _format_metric(logs, k):
             value = logs.get(k)
             if value is None:
                 return "<none>"
             return f"{value:.4f}"
-
+        
         metrics = [_format_metric(logs, k) for k in self.params["metrics"]]
         row = (
             [epoch + 1, format(logs["lr"], ".1e")]
@@ -138,7 +138,7 @@ class TSVLogger(keras.callbacks.Callback):
         if self.log_file is not None:
             self.log_writer.writerow(row)
             self.log_file.flush()
-
+    
     def on_train_end(self, logs=None):
         if self.log_file is not None:
             self.log_file.close()
@@ -147,19 +147,19 @@ class TSVLogger(keras.callbacks.Callback):
 
 class EpochLogger(keras.callbacks.Callback):
     """DEBUGログを色々出力するcallback。Horovod使用時はrank() == 0のみ有効。"""
-
+    
     def __init__(self, enabled=None):
         super().__init__()
         self.enabled = enabled if enabled is not None else tk.hvd.is_master()
         self.train_start_time = None
         self.epoch_start_time = None
-
+    
     def on_train_begin(self, logs=None):
         self.train_start_time = time.time()
-
+    
     def on_epoch_begin(self, epoch, logs=None):
         self.epoch_start_time = time.time()
-
+    
     def on_epoch_end(self, epoch, logs=None):
         assert self.train_start_time is not None
         assert self.epoch_start_time is not None
@@ -187,17 +187,17 @@ class Checkpoint(keras.callbacks.Callback):
         checkpoints: 保存する回数。epochs % (checkpoints + 1) == 0だとキリのいい感じになる。
 
     """
-
+    
     def __init__(self, checkpoint_path, checkpoints=3):
         super().__init__()
         self.checkpoint_path = pathlib.Path(checkpoint_path)
         self.checkpoints = checkpoints
         self.target_epochs = {}
-
+    
     def on_train_begin(self, logs=None):
         s = self.checkpoints + 1
         self.target_epochs = {self.params["epochs"] * (i + 1) // s for i in range(s)}
-
+    
     def on_epoch_begin(self, epoch, logs=None):
         if epoch in self.target_epochs:
             if tk.hvd.is_master():
@@ -228,10 +228,56 @@ class Checkpoint(keras.callbacks.Callback):
 
 class ErrorOnNaN(keras.callbacks.Callback):
     """NaNやinfで異常終了させる。"""
-
+    
     def on_batch_end(self, batch, logs=None):
         logs = logs or {}
         loss = logs.get("loss")
         if loss is not None:
             if np.isnan(loss) or np.isinf(loss):
                 raise RuntimeError(f"Batch {batch}: Invalid loss")
+
+
+class AUCCallback(keras.callbacks.Callback):
+    def __init__(self, train_set: tk.data.Dataset,
+                 train_data_loader: tk.data.DataLoader,
+                 val_set: tk.data.Dataset,
+                 val_data_loader: tk.data.DataLoader, class_names: list, use_horovod: bool = False):
+        super().__init__()
+        self.train_data = train_set
+        self.train_loader = train_data_loader
+        self.val_data = val_set
+        self.val_loader = val_data_loader
+        self.class_names = class_names
+        self.use_horovod = use_horovod
+        self.mean_val = 0
+        self.val_list = [0 for i in range(len(class_names))]
+    
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        if 1:#if epoch in self.target_epochs:
+            if tk.hvd.is_master():
+                y_pred = self.predict(self.train_data,self.train_loader)
+                roc = sklearn.metrics.roc_auc_score(self.train_data.labels, y_pred)
+                y_pred_val = self.predict(self.val_data,self.val_loader)
+                roc_val = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
+                print('\rroc-auc: %s - roc-auc_val: %s' % (str(round(roc, 4)), str(round(roc_val, 4))), end=100 * ' ' + '\n')
+            tk.hvd.barrier()
+    
+    def predict(self, dataset, data_loader):
+        with tk.log.trace_scope("auc_predict"):
+            dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
+            iterator = data_loader.iter(dataset)
+            values = tk.models._predict_flow(
+                self.model, iterator, 1, None, desc="auc_predict"
+            )
+            values = np.array(list(values))
+            
+            values = tk.hvd.allgather(values) if self.use_horovod else values
+            return values
+# def _predict_flow(model, iterator, verbose, on_batch_fn, desc):
+#     on_batch_fn = on_batch_fn or _predict_on_batch
+#     for X, _ in tk.utils.tqdm(
+#         iterator, desc=desc, total=len(iterator), disable=verbose < 1
+#     ):
+#         pred_batch = on_batch_fn(model, X)
+#         yield from pred_batch
