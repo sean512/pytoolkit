@@ -239,18 +239,21 @@ class ErrorOnNaN(keras.callbacks.Callback):
 
 class AUCCallback(keras.callbacks.Callback):
     """AUCを計算する
-
+    EpochLoggerで表示してくれなくてかなC
+    self.params["metrics"]に登録が必要だけど...
+    
     Args:
         val_set (tk.data.Dataset):
         val_data_loader (tk.data.DataLoader):
         class_name (list):
         use_horovod (bool):
         check_epoch (int):
+        use_classname (bool):
 
     """
     def __init__(self,
                  val_set,
-                 val_data_loader, class_names, use_horovod = False,check_epoch=2):
+                 val_data_loader, class_names, use_classname=True,use_horovod = False,check_epoch=2):
         super().__init__()
         self.val_data = val_set
         self.val_loader = val_data_loader
@@ -260,33 +263,38 @@ class AUCCallback(keras.callbacks.Callback):
         self.val_list = [0 for i in range(len(class_names))]
         self.num_classes=len(class_names)
         self.call_epochs=check_epoch
+        self.use_classname=use_classname
     
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
         # if epoch in self.target_epochs
         if epoch % self.call_epochs == 0:
-
-            # if tk.hvd.is_master():
-            #     y_pred_val = self.predict(self.val_data,self.val_loader)
-            #     roc_val = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
-            # tk.hvd.barrier()
             y_pred_val = self.predict(self.val_data, self.val_loader)
             meanscore = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
             score_list = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val,average=None)
             logs["end_mauc"] = meanscore
             self.mean_val = meanscore
             self.val_list = score_list
-            # if hvd_rank==0:
-            #     print(" — end_mauc: {:f}".format(meanscore), end="")  # print(" — val_mauc_e: % f" % (meanscore))
             for i in range(self.num_classes):
                 logs["end_auc_{}".format(i)] = score_list[i]
 
             if tk.hvd.is_master():
                 meanscore = logs.get("end_mauc")
-                print_str=" — end_mauc: {:f}".format(meanscore)
-                for i in range(self.num_classes):
-                    score = logs.get("end_auc_{}".format(i))
-                    print_str.join(" — end_auc_{0}: {1:f}".format(i, score))
+                print_str=" —end_mauc: {:f},".format(meanscore)
+                if self.use_classname:
+                    for name,i in enumerate(self.class_names):
+                        score = logs.get("end_auc_{}".format(i))
+                        if i==(self.num_classes-1):
+                            print_str+=" —end_auc_{0}: {1:f}".format(name, score)
+                        else:
+                            print_str += " —end_auc_{0}: {1:f},".format(name, score)
+                else:
+                    for i in range(self.num_classes):
+                        score = logs.get("end_auc_{}".format(i))
+                        if i==(self.num_classes-1):
+                            print_str+=" —end_auc_{0}: {1:f}".format(i, score)
+                        else:
+                            print_str += " —end_auc_{0}: {1:f},".format(i, score)
                 tk.log.get(__name__).info(print_str)
             tk.hvd.barrier()
         else:
