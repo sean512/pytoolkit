@@ -282,7 +282,7 @@ class AUCCallback(keras.callbacks.Callback):
                 meanscore = logs.get("end_mauc")
                 print_str=" —end_mauc: {:f},".format(meanscore)
                 if self.use_classname:
-                    for name,i in enumerate(self.class_names):
+                    for i, name in enumerate(self.class_names):
                         score = logs.get("end_auc_{}".format(i))
                         if i==(self.num_classes-1):
                             print_str+=" —end_auc_{0}: {1:f}".format(name, score)
