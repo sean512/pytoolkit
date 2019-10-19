@@ -124,6 +124,9 @@ def nvidia_smi(*args):
 
 def GPU_list(use_gpus=2, select_mode='top'):
     """
+    https://stackoverflow.com/questions/41634674/tensorflow-on-shared-gpus-how-to-automatically-select-the-one-that-is-unused
+    ↑に切り替えた方がええかな?
+    
     共有マシンなどでGPUが複数ある環境で、使われているGPUを判断する
     
     gpus = gpu_list.GPU_list(use_gpus=2)
@@ -271,6 +274,22 @@ def select_gpu(use_gpus, gpu_info, select_mode='top'):
     
     # =get_gpu_info()
 
+def not_use_gpu():
+    import random
+    import gpustat
+    stats = gpustat.GPUStatCollection.new_query()
+    ids = map(lambda gpu: int(gpu.entry['index']), stats)
+    ratios = map(lambda gpu: float(gpu.entry['memory.used']) / float(gpu.entry['memory.total']), stats)
+    pairs = list(zip(ids, ratios))
+    random.shuffle(pairs)
+    # bestGPU = min(pairs, key=lambda x: x[1])#[0]
+    bestGPU = sorted(pairs, key=lambda x: x[1])  # [0]
+    
+    print("setGPU: Setting GPU to: {}".format(bestGPU))
+    os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+    # os.environ['CUDA_VISIBLE_DEVICES'] = str(bestGPU)
+    # data_dir = pathlib.Path(f"data")
+    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join([str(i[0]) for i in bestGPU])
 
 def strtoint(val, lensize=6):
     if len(val) <= lensize:
