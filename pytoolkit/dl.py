@@ -288,7 +288,8 @@ def pick_gpus():
     :return:
     """
     out_list = get_gpu_info()
-    stats = {k: [v[k] for v in out_list] for k in DEF_REQ_DATA}
+    # stats = {k: [v[k] for v in out_list] for k in DEF_REQ_DATA}
+    stats = out_list
     import random
     ids = map(lambda gpu: int(gpu['index']), stats)
     memory_useratios = map(lambda gpu: float(gpu['memory.used']) / float(gpu['memory.total']), stats)
