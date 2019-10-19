@@ -3,6 +3,7 @@ import functools
 import os
 import pathlib
 import subprocess
+import sys
 import time
 
 import numpy as np
@@ -173,7 +174,7 @@ def select_gpu(use_gpus, gpu_info, select_mode='top'):
     """2018年に慌てて作ったコードなので汚い
     何をしているかうろ覚え..."""
     temp_limt = 60  # あちあちと判定する閾値
-    memoryfree_limt = 4096 # 8192  # 10240
+    memoryfree_limt = 4096 if sys.platform.startswith("win32") else 8192  # 10240
     utilization_gpu_limit = 40
     utilization_memory_limit = 40
     rescan_num = 2  # 再スキャンする回数
