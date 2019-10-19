@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import time
+from operator import itemgetter
 
 import numpy as np
 import tensorflow as tf
@@ -124,6 +125,8 @@ def nvidia_smi(*args):
 
 def GPU_list(use_gpus=2, select_mode='top'):
     """
+    do not use
+    
     https://stackoverflow.com/questions/41634674/tensorflow-on-shared-gpus-how-to-automatically-select-the-one-that-is-unused
     ↑に切り替えた方がええかな?
     
@@ -174,7 +177,9 @@ def GPU_list(use_gpus=2, select_mode='top'):
 
 
 def select_gpu(use_gpus, gpu_info, select_mode='top'):
-    """2018年に慌てて作ったコードなので汚い
+    """
+    バグがあるっぽいのでdo not use
+    2018年に慌てて作ったコードなので汚い
     何をしているかうろ覚え..."""
     temp_limt = 60  # あちあちと判定する閾値
     memoryfree_limt = 4096 if sys.platform.startswith("win32") else 8192  # 10240
@@ -274,22 +279,28 @@ def select_gpu(use_gpus, gpu_info, select_mode='top'):
     
     # =get_gpu_info()
 
-def not_use_gpu():
+def pick_use_gpus() -> list(int):
+    """
+    メモリー利用率とCPU利用率が低い順に出している
+    温度も考慮したい
+    
+    :return:
+    """
+    out_list = get_gpu_info()
+    stats = {k: [v[k] for v in out_list] for k in DEF_REQ_DATA}
     import random
-    import gpustat
-    stats = gpustat.GPUStatCollection.new_query()
-    ids = map(lambda gpu: int(gpu.entry['index']), stats)
-    ratios = map(lambda gpu: float(gpu.entry['memory.used']) / float(gpu.entry['memory.total']), stats)
-    pairs = list(zip(ids, ratios))
+    ids = map(lambda gpu: int(gpu['index']), stats)
+    memory_useratios = map(lambda gpu: float(gpu['memory.used']) / float(gpu['memory.total']), stats)
+    gpu_useratios = map(lambda gpu: int(gpu['utilization.gpu']), stats)
+    pairs = list(zip(ids, memory_useratios, gpu_useratios))
     random.shuffle(pairs)
     # bestGPU = min(pairs, key=lambda x: x[1])#[0]
-    bestGPU = sorted(pairs, key=lambda x: x[1])  # [0]
+    # bestGPUs = sorted(pairs, key=lambda x: x[1])  # [0]
+    bestGPUs = sorted(pairs, key=itemgetter(1, 2))
+    print(bestGPUs)
+    bestGPUs = [i[0] for i in bestGPUs]
     
-    print("setGPU: Setting GPU to: {}".format(bestGPU))
-    os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-    # os.environ['CUDA_VISIBLE_DEVICES'] = str(bestGPU)
-    # data_dir = pathlib.Path(f"data")
-    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join([str(i[0]) for i in bestGPU])
+    return bestGPUs
 
 def strtoint(val, lensize=6):
     if len(val) <= lensize:
