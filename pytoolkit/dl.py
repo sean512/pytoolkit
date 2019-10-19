@@ -123,7 +123,7 @@ def nvidia_smi(*args):
 
 
 
-def GPU_list(use_gpus=2, select_mode='top'):
+def dontuse_GPU_list(use_gpus=2, select_mode='top'):
     """
     do not use
     
@@ -165,18 +165,18 @@ def GPU_list(use_gpus=2, select_mode='top'):
     # pprint.pprint(smi_out,depth=2,width=140)#print(smi_out)
     if 1 <= len(smi_out) <= use_gpus:  # len(smi_out)==1 or 1<len(smi_out)<use_gpus:
         gpu_stats = get_gpu_info()
-        return select_gpu(use_gpus, gpu_stats, select_mode)
+        return dontuse_select_gpu(use_gpus, gpu_stats, select_mode)
         # pass# GPUが1個以上use_gpus以下の時の処理
     elif len(smi_out) > use_gpus:
         gpu_stats = get_gpu_info()
-        return select_gpu(use_gpus, gpu_stats, select_mode)
+        return dontuse_select_gpu(use_gpus, gpu_stats, select_mode)
         # pass#GPUがuse_gpus個以上あったとき
     else:  # 万が一,GPUが見つからなかったら
         raise SystemError("GPU is Not Found")
     # return smi_runout_raw.stdout,smi_out
 
 
-def select_gpu(use_gpus, gpu_info, select_mode='top'):
+def dontuse_select_gpu(use_gpus, gpu_info, select_mode='top'):
     """
     バグがあるっぽいのでdo not use
     2018年に慌てて作ったコードなので汚い
@@ -279,11 +279,12 @@ def select_gpu(use_gpus, gpu_info, select_mode='top'):
     
     # =get_gpu_info()
 
-def pick_use_gpus() -> list(int):
+
+def pick_gpus():
     """
     メモリー利用率とCPU利用率が低い順に出している
     温度も考慮したい
-    
+
     :return:
     """
     out_list = get_gpu_info()
