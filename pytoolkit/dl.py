@@ -296,7 +296,7 @@ def pick_gpus():
     gpu_useratios = map(lambda gpu: int(gpu['utilization.gpu']), stats)
     gpu_flag = map(
         lambda gpu: 0 if float(gpu['memory.used']) / float(gpu['memory.total']) < 0.5 and int(gpu['utilization.gpu']) < 50 else 1 if int(
-            gpu['utilization.gpu']) >= 50 else 2 if float(gpu['memory.used']) / float(gpu['memory.total']) < 0.7 else 3, stats)
+            gpu['utilization.gpu']) >= 50 else 2 if int(gpu['utilization.gpu']) <= 50 else 3 if float(gpu['memory.used']) / float(gpu['memory.total']) < 0.7 else 4, stats)
     pairs = list(zip(ids, memory_useratios, gpu_useratios, gpu_flag))
     random.shuffle(pairs)
 
