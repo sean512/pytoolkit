@@ -311,7 +311,7 @@ class AUCCallback(keras.callbacks.Callback):
             dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
             iterator = data_loader.iter(dataset)
             values = tk.models._predict_flow(
-                self.model, iterator, 1, None, desc="auc_predict"
+                self.model, iterator, 1 if tk.hvd.is_master() else 0, None, desc="auc_predict"
             )
             values = np.array(list(values))
             
