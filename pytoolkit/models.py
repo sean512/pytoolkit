@@ -1,458 +1,325 @@
-"""Kerasのモデル関連。
-
-Horovodに対応した簡単なwrapperなど。
-
-ただし引数のデフォルトや細かい挙動を変えていたりするので要注意。
-
-"""
-from __future__ import annotations
-
+"""DeepLearning(主にKeras)関連。"""
+import csv
 import pathlib
-import shutil
-import typing
+import time
 
 import numpy as np
-import tensorflow as tf
+import sklearn
 
 import pytoolkit as tk
-
-from . import keras
-
-# モデルの入出力の型
-ModelIOType = typing.Union[
-    np.ndarray, typing.List[np.ndarray], typing.Dict[str, np.ndarray]
-]
-# predictで使う型
-OnBatchFnType = typing.Callable[[keras.models.Model, ModelIOType], ModelIOType]
+from . import K, keras
 
 
-def load(
-    path: tk.typing.PathLike,
-    custom_objects: dict = None,
-    compile: bool = False,  # pylint: disable=redefined-outer-name
-    gpus: int = None,
-):
-    """モデルの読み込み。"""
-    path = pathlib.Path(path)
-    with tk.log.trace_scope(f"load({path})"):
-        custom_objects = custom_objects.copy() if custom_objects else {}
-        custom_objects.update(tk.get_custom_objects())
-        if gpus is not None and gpus > 1:
-            with tf.device("/cpu:0"):
-                model = keras.models.load_model(
-                    str(path), custom_objects=custom_objects, compile=compile
-                )
-            model, _ = multi_gpu_model(model, batch_size=0, gpus=gpus)
-        else:
-            model = keras.models.load_model(
-                str(path), custom_objects=custom_objects, compile=compile
-            )
-    return model
-
-
-def load_weights(
-    model: keras.models.Model,
-    path: tk.typing.PathLike,
-    by_name: bool = False,
-    skip_not_exist: bool = False,
-):
-    """モデルの重みの読み込み。"""
-    path = pathlib.Path(path)
-    if path.exists():
-        with tk.log.trace_scope(f"load_weights({path})"):
-            model.load_weights(str(path), by_name=by_name)
-    elif skip_not_exist:
-        tk.log.get(__name__).info(f"{path} is not found.")
-    else:
-        raise RuntimeError(f"{path} is not found.")
-
-
-def save(
-    model: keras.models.Model,
-    path: tk.typing.PathLike,
-    mode: str = "hdf5",
-    include_optimizer: bool = False,
-):
-    """モデルの保存。
-
-    Args:
-        model: モデル
-        path: 保存先。saved_modelの場合はディレクトリ
-        mode: "hdf5", "saved_model", "onnx", "tflite"のいずれか
-        include_optimizer: HDF5形式で保存する場合にoptimizerを含めるか否か
-
-    """
-    assert mode in ("hdf5", "saved_model", "onnx", "tflite")
-    path = pathlib.Path(path)
-    if tk.hvd.is_master():
-        with tk.log.trace_scope(f"save({path})"):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if mode == "hdf5":
-                model.save(str(path), include_optimizer=include_optimizer)
-            elif mode == "saved_model":
-                if path.is_dir():
-                    shutil.rmtree(path)
-                tk.log.get(__name__).info(
-                    f"inpus={model.inputs} outputs={model.outputs}"
-                )
-                tf.saved_model.simple_save(
-                    keras.backend.get_session(),
-                    str(path),
-                    inputs={x.name: x for x in model.inputs},
-                    outputs={x.name: x for x in model.outputs},
-                )
-            elif mode == "onnx":
-                import onnxmltools
-                import tf2onnx
-
-                input_names = [x.name for x in model.inputs]
-                output_names = [x.name for x in model.outputs]
-                tk.log.get(__name__).info(
-                    f"input_names={input_names} output_names={output_names}"
-                )
-                onnx_graph = tf2onnx.tfonnx.process_tf_graph(
-                    keras.backend.get_session().graph,
-                    input_names=input_names,
-                    output_names=output_names,
-                )
-                onnx_model = onnx_graph.make_model("test")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                onnxmltools.utils.save_model(onnx_model, str(path))
-            elif mode == "tflite":
-                tk.log.get(__name__).info(
-                    f"inpus={model.inputs} outputs={model.outputs}"
-                )
-                tflite_model = tf.lite.TFLiteConverter.from_session(
-                    keras.backend.get_session(),
-                    input_tensors=model.inputs,
-                    output_tensors=model.outputs,
-                ).convert()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("wb") as f:
-                    f.write(tflite_model)
-            else:
-                raise ValueError(f"Invalid save format: {mode}")
-    tk.hvd.barrier()
-
-
-def summary(model: keras.models.Model):
-    """summaryを実行するだけ。"""
-    model.summary(
-        print_fn=tk.log.get(__name__).info if tk.hvd.is_master() else lambda x: None
-    )
-
-
-def plot(
-    model: keras.models.Model,
-    to_file: tk.typing.PathLike = "model.svg",
-    show_shapes: bool = True,
-    show_layer_names: bool = True,
-    rankdir: str = "TB",
-):
-    """モデルのグラフのplot。"""
-    path = pathlib.Path(to_file)
-    if tk.hvd.is_master():
-        with tk.log.trace_scope(f"plot({path})"):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            keras.utils.plot_model(
-                model,
-                str(path),
-                show_shapes=show_shapes,
-                show_layer_names=show_layer_names,
-                rankdir=rankdir,
-            )
-    tk.hvd.barrier()
-
-
-def compile(
-    model: keras.models.Model, optimizer, loss, metrics=None, loss_weights=None
-):  # pylint: disable=redefined-builtin
-    """compileするだけ。"""
-    with tk.log.trace_scope("compile"):
-        if tk.hvd.initialized():
-            optimizer = keras.optimizers.get(optimizer)
-            optimizer = tk.hvd.get().DistributedOptimizer(
-                optimizer, compression=tk.hvd.get().Compression.fp16
-            )
-        model.compile(optimizer, loss, metrics, loss_weights=loss_weights)
-
-
-def fit(
-    model: keras.models.Model,
-    train_set: tk.data.Dataset,
-    train_data_loader: tk.data.DataLoader,
-    val_set: tk.data.Dataset = None,
-    val_data_loader: tk.data.DataLoader = None,
-    validation_freq: typing.Union[int, typing.Sequence[int], str, None] = "auto",
-    class_weight: dict = None,
-    epochs: int = 1800,
-    callbacks: list = None,
-    verbose: int = 1,
-    initial_epoch: int = 0,
-    use_multiprocessing: bool = False,
-    workers: int = 1,
-    max_queue_size: int = 10,
-    use_shuffle: bool = True,
-    val_shuffle: bool = False,
-    horovod_is: bool = True,
-):
-    """独自のtraining loopになる予定の関数。
-
-    Args:
-        model: モデル
-        train_set: 訓練データ
-        train_data_loader: 訓練データの読み込み
-        val_set: 検証データ。Noneなら省略。
-        val_data_loader: 検証データの読み込み
-        validation_freq: 検証を行うエポック数の間隔、またはエポック数のリスト。0ならvalidationしない(独自仕様)。"auto"なら適当に決める(独自仕様)。
-        class_weight: クラスごとの重みのdict
-        epochs: エポック数
-        callbacks: コールバック。EpochLoggerとErrorOnNaNは自動追加。
-        verbose: 1ならプログレスバー表示、2ならepoch毎の結果だけ表示。
-        initial_epoch: 学習を開始するエポック数 - 1
-        use_multiprocessing: Trueならマルチプロセス
-        workers: ワーカー数
-        max_queue_size: キューの最大サイズ
-        use_shuffle: Trueなら学習用データをシャッフルする。mixup使用時はTrueじゃなければ動かない
-        val_shuffle: Trueなら検証データをシャッフルする。
-        horovod_is: Trueならhorovod使用時の用のバッチサイズ計算に切り替える
-
-    """
-    if validation_freq == 0:
-        # validation_freq == 0ならvalidationしない(独自仕様)
-        validation_freq = None
-        val_set = None
-        val_data_loader = None
-    elif validation_freq == "auto":
-        # "auto"なら適当に決める(独自仕様)
-        validation_freq = make_validation_freq(
-            validation_freq, epochs, train_set, val_set
-        )
-    assert (val_set is None) == (val_data_loader is None)
-
-    train_iterator = train_data_loader.iter(train_set, shuffle=use_shuffle, use_horovod=horovod_is)
-    val_iterator = (
-        val_data_loader.iter(val_set, shuffle=val_shuffle, use_horovod=horovod_is)
-        if val_set is not None and val_data_loader is not None
-        else None
-    )
-
-    callbacks = make_callbacks(callbacks)
-
-    fit_kwargs = {}
-    if validation_freq is not None:
-        fit_kwargs["validation_freq"] = validation_freq
-
-    with tk.log.trace_scope("fit"):
-        model.fit(
-            train_iterator,
-            validation_data=val_iterator,
-            class_weight=class_weight,
-            epochs=epochs,
-            callbacks=callbacks,
-            verbose=verbose if tk.hvd.is_master() else 0,
-            initial_epoch=initial_epoch,
-            shuffle=use_shuffle,
-            use_multiprocessing=use_multiprocessing,
-            workers=workers,
-            max_queue_size=max_queue_size,
-            **fit_kwargs,
-        )
-
-    # DataLoaderの処理時間を表示
-    tk.log.get(__name__).info(
-        f"train_iterator: {train_iterator.seconds_per_step * 1000:4.0f}ms/step"
-    )
-    if val_iterator is not None:
-        tk.log.get(__name__).info(
-            f"val_iterator:   {val_iterator.seconds_per_step * 1000:4.0f}ms/step"
-        )
-
-
-def make_validation_freq(
-    validation_freq, epochs, train_set, val_set, max_val_per_train=0.1
-):
-    """validation_freqをほどよい感じに作成する。"""
-    if val_set is None:
-        return None
-    # ・sqrt(epochs)回くらいやれば十分？ (指標にも依るが…)
-    # ・valがtrainの10%未満くらいなら毎回やっても問題無い
-    validation_freq = max(
-        int(np.sqrt(epochs)),
-        int(len(val_set) / (len(train_set) * max_val_per_train)),
-        1,
-    )
-    # validation_freqの値を表示
-    tk.log.get(__name__).info(
-        f"validation_freq: {validation_freq}"
-    )
+class LearningRateStepDecay(keras.callbacks.Callback):
+    """よくある150epoch目と225epoch目に学習率を1/10するコールバック。"""
     
-    # 最後のepochはvalidationしたいので、そこからvalidation_freq毎に。
-    validation_freq = list(range(epochs, 0, -validation_freq))
-    return validation_freq
-
-
-def make_callbacks(callbacks):
-    """callbacksをいい感じにする。"""
-    callbacks = (callbacks or []) + [
-        tk.callbacks.EpochLogger(),
-        tk.callbacks.ErrorOnNaN(),
-    ]
-    if tk.hvd.initialized() and tk.hvd.size() > 1:
-        callbacks.append(tk.hvd.get().callbacks.BroadcastGlobalVariablesCallback(0))
-        callbacks.append(tk.hvd.get().callbacks.MetricAverageCallback())
-    return callbacks
-
-
-def predict(
-    model: keras.models.Model,
-    dataset: tk.data.Dataset,
-    data_loader: tk.data.DataLoader,
-    verbose: int = 1,
-    use_horovod: bool = False,
-    on_batch_fn: OnBatchFnType = None,
-) -> ModelIOType:
-    """予測。
-
-    Args:
-        model: モデル
-        dataset: 予測したい入力データ
-        data_loader: データの読み込み
-        verbose: プログレスバー(tqdm)を表示するか否か
-        use_horovod: MPIによる分散処理をするか否か
-        on_batch_fn: モデルとミニバッチ分の入力データを受け取り、予測結果を返す処理。(TTA用)
-        flow: 結果をgeneratorで返すならTrue
-        desc: flow時のtqdmのdesc
-
-    Returns:
-        予測結果。
-
-    """
-    with tk.log.trace_scope("predict"):
-        verbose = verbose if tk.hvd.is_master() else 0
-        dataset = tk.hvd.split(dataset) if use_horovod else dataset
-        iterator = data_loader.iter(dataset)
-        if on_batch_fn is not None:
-            values = _predict_flow(
-                model, iterator, verbose, on_batch_fn, desc="predict"
+    def __init__(self, reduce_epoch_rates=(0.5, 0.75), factor=0.1, epochs=None):
+        super().__init__()
+        self.reduce_epoch_rates = reduce_epoch_rates
+        self.factor = factor
+        self.epochs = epochs
+        self.start_lr = None
+        self.reduce_epochs = None
+    
+    def on_train_begin(self, logs=None):
+        if not hasattr(self.model.optimizer, "lr"):
+            raise ValueError('Optimizer must have a "lr" attribute.')
+        self.start_lr = float(K.get_value(self.model.optimizer.lr))
+        epochs = self.epochs or self.params["epochs"]
+        self.reduce_epochs = [
+            min(max(int(epochs * r), 1), epochs) for r in self.reduce_epoch_rates
+        ]
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        if epoch + 1 in self.reduce_epochs:
+            lr1 = K.get_value(self.model.optimizer.lr)
+            lr2 = lr1 * self.factor
+            K.set_value(self.model.optimizer.lr, lr2)
+            tk.log.get(__name__).info(
+                f"Epoch {epoch + 1}: Learning rate {lr1:.1e} -> {lr2:.1e}"
             )
-            values = np.array(list(values))
-        else:
-            values = model.predict(iterator, verbose=verbose)
-        values = tk.hvd.allgather(values) if use_horovod else values
-        return values
+    
+    def on_train_end(self, logs=None):
+        # 終わったら戻しておく
+        K.set_value(self.model.optimizer.lr, self.start_lr)
 
 
-def predict_flow(
-    model: keras.models.Model,
-    dataset: tk.data.Dataset,
-    data_loader: tk.data.DataLoader,
-    verbose: int = 1,
-    on_batch_fn: OnBatchFnType = None,
-    desc: str = "predict",
-) -> typing.Iterator[ModelIOType]:
-    """予測。
-
-    Args:
-        model: モデル
-        dataset: 予測したい入力データ
-        data_loader: データの読み込み
-        verbose: プログレスバー(tqdm)を表示するか否か
-        on_batch_fn: モデルとミニバッチ分の入力データを受け取り、予測結果を返す処理。(TTA用)
-        flow: 結果をgeneratorで返すならTrue
-        desc: flow時のtqdmのdesc
-
-    Returns:
-        予測結果。サンプルごとのgenerator。
-
-    """
-    with tk.log.trace_scope("predict"):
-        iterator = data_loader.iter(dataset)
-        return _predict_flow(model, iterator, verbose, on_batch_fn, desc)
-
-
-def _predict_flow(model, iterator, verbose, on_batch_fn, desc):
-    on_batch_fn = on_batch_fn or _predict_on_batch
-    for X, _ in tk.utils.tqdm(
-        iterator, desc=desc, total=len(iterator), disable=verbose < 1
-    ):
-        pred_batch = on_batch_fn(model, X)
-        yield from pred_batch
-
-
-def _predict_on_batch(model: keras.models.Model, X):
-    return model.predict_on_batch(X)
-
-
-def evaluate(
-    model: keras.models.Model,
-    dataset: tk.data.Dataset,
-    data_loader: tk.data.DataLoader,
-    verbose: int = 1,
-    prefix: str = "",
-    use_horovod: bool = False,
-) -> typing.Dict[str, float]:
-    """評価。
-
-    Args:
-        model: モデル。
-        dataset: データ。
-        data_loader: データの読み込み
-        verbose: 1ならプログレスバー表示。
-        prefix: メトリクス名の接頭文字列。
-        use_horovod: MPIによる分散処理をするか否か。
-
-    Returns:
-        メトリクス名と値のdict
-
-    """
-    with tk.log.trace_scope("evaluate"):
-        dataset = tk.hvd.split(dataset) if use_horovod else dataset
-        iterator = data_loader.iter(dataset)
-        values = model.evaluate(iterator, verbose=verbose if tk.hvd.is_master() else 0)
-        values = tk.hvd.allreduce(values) if use_horovod else values
-        if len(model.metrics_names) == 1:
-            evals = {prefix + model.metrics_names[0]: values}
-        else:
-            evals = dict(zip([prefix + n for n in model.metrics_names], values))
-        return evals
-
-
-def multi_gpu_model(
-    model: keras.models.Model, batch_size: int, gpus: int = None
-) -> keras.models.Model:
-    """複数GPUでデータ並列するモデルを作成する。
+class CosineAnnealing(keras.callbacks.Callback):
+    """Cosine Annealing without restart。
 
     References:
-        - <https://github.com/fchollet/keras/issues/2436>
-        - <https://github.com/kuza55/keras-extras/blob/master/utils/multi_gpu.py>
+        - SGDR: Stochastic Gradient Descent with Warm Restarts <https://arxiv.org/abs/1608.03983>
 
     """
-    if gpus is None:
-        gpus = tk.dl.get_gpu_count()
-        tk.log.get(__name__).info(f"gpu count = {gpus}")
-    if gpus <= 1:
-        return model, batch_size
+    
+    def __init__(self, factor=0.01, epochs=None, warmup_epochs=5):
+        assert factor < 1
+        super().__init__()
+        self.factor = factor
+        self.epochs = epochs
+        self.warmup_epochs = warmup_epochs
+        self.start_lr = None
+    
+    def on_train_begin(self, logs=None):
+        if not hasattr(self.model.optimizer, "lr"):
+            raise ValueError('Optimizer must have a "lr" attribute.')
+        self.start_lr = float(K.get_value(self.model.optimizer.lr))
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        lr_max = self.start_lr
+        lr_min = self.start_lr * self.factor
+        if epoch + 1 < self.warmup_epochs:
+            lr = lr_max * (epoch + 1) / self.warmup_epochs
+        else:
+            r = (epoch + 1) / (self.epochs or self.params["epochs"])
+            lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + np.cos(np.pi * r))
+        K.set_value(self.model.optimizer.lr, float(lr))
+    
+    def on_train_end(self, logs=None):
+        # 終わったら戻しておく
+        K.set_value(self.model.optimizer.lr, self.start_lr)
 
-    assert isinstance(model.inputs, list)
-    assert isinstance(model.outputs, list)
 
-    with tk.log.trace_scope("multi_gpu_model"):
-        parallel_model = keras.utils.multi_gpu_model(model, gpus)
+class TSVLogger(keras.callbacks.Callback):
+    """ログを保存するコールバック。Horovod使用時はrank() == 0のみ有効。
 
-        # Model.saveの置き換え
-        # https://github.com/fchollet/keras/issues/2436#issuecomment-294243024
-        def _save(self_, *args, **kargs):
-            assert self_ is not None  # noqa
-            model.save(*args, **kargs)
+    Args:
+        filename: 保存先ファイル名。「{metric}」はmetricの値に置換される。str or pathlib.Path
+        append: 追記するのか否か。
 
-        def _save_weights(self_, *args, **kargs):
-            assert self_ is not None  # noqa
-            model.save_weights(*args, **kargs)
-
-        parallel_model.save = type(model.save)(_save, parallel_model)
-        parallel_model.save_weights = type(model.save_weights)(
-            _save_weights, parallel_model
+    """
+    
+    def __init__(self, filename, append=False, enabled=None):
+        super().__init__()
+        self.filename = pathlib.Path(filename)
+        self.append = append
+        self.enabled = enabled if enabled is not None else tk.hvd.is_master()
+        self.log_file = None
+        self.log_writer = None
+        self.epoch_start_time = None
+    
+    def on_train_begin(self, logs=None):
+        if self.enabled:
+            self.filename.parent.mkdir(parents=True, exist_ok=True)
+            self.log_file = self.filename.open(
+                "a" if self.append else "w", buffering=65536
+            )
+            self.log_writer = csv.writer(
+                self.log_file, delimiter="\t", lineterminator="\n"
+            )
+            self.log_writer.writerow(
+                ["epoch", "lr"] + self.params["metrics"] + ["time"]
+            )
+        else:
+            self.log_file = None
+            self.log_writer = None
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        self.epoch_start_time = time.time()
+    
+    def on_epoch_end(self, epoch, logs=None):
+        assert self.epoch_start_time is not None
+        logs = logs or {}
+        logs["lr"] = K.get_value(self.model.optimizer.lr)
+        elapsed_time = time.time() - self.epoch_start_time
+        
+        def _format_metric(logs, k):
+            value = logs.get(k)
+            if value is None:
+                return "<none>"
+            return f"{value:.4f}"
+        
+        metrics = [_format_metric(logs, k) for k in self.params["metrics"]]
+        row = (
+            [epoch + 1, format(logs["lr"], ".1e")]
+            + metrics
+            + [str(int(np.ceil(elapsed_time)))]
         )
+        if self.log_file is not None:
+            self.log_writer.writerow(row)
+            self.log_file.flush()
+    
+    def on_train_end(self, logs=None):
+        if self.log_file is not None:
+            self.log_file.close()
+        self.append = True  # 同じインスタンスの再利用時は自動的に追記にする
 
-        return parallel_model, batch_size * gpus
+
+class EpochLogger(keras.callbacks.Callback):
+    """DEBUGログを色々出力するcallback。Horovod使用時はrank() == 0のみ有効。"""
+    
+    def __init__(self, enabled=None):
+        super().__init__()
+        self.enabled = enabled if enabled is not None else tk.hvd.is_master()
+        self.train_start_time = None
+        self.epoch_start_time = None
+    
+    def on_train_begin(self, logs=None):
+        self.train_start_time = time.time()
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        self.epoch_start_time = time.time()
+    
+    def on_epoch_end(self, epoch, logs=None):
+        assert self.train_start_time is not None
+        assert self.epoch_start_time is not None
+        lr = K.get_value(self.model.optimizer.lr)
+        now = time.time()
+        elapsed_time = now - self.epoch_start_time
+        time_per_epoch = (now - self.train_start_time) / (epoch + 1)
+        eta = time_per_epoch * (self.params["epochs"] - epoch - 1)
+        metrics = " ".join(
+            [f"{k}={logs.get(k):.4f}" for k in self.params["metrics"] if k in logs]
+        )
+        if self.enabled:
+            tk.log.get(__name__).debug(
+                f"Epoch {epoch + 1:3d}: lr={lr:.1e} {metrics} time={int(np.ceil(elapsed_time))} ETA={int(np.ceil(eta))}"
+            )
+
+
+class Checkpoint(keras.callbacks.Callback):
+    """学習中に定期的に保存する。
+
+    速度重視でinclude_optimizerはFalse固定。
+
+    Args:
+        checkpoint_path: 保存先パス
+        checkpoints: 保存する回数。epochs % (checkpoints + 1) == 0だとキリのいい感じになる。
+
+    """
+    
+    def __init__(self, checkpoint_path, checkpoints=3):
+        super().__init__()
+        self.checkpoint_path = pathlib.Path(checkpoint_path)
+        self.checkpoints = checkpoints
+        self.target_epochs = {}
+    
+    def on_train_begin(self, logs=None):
+        s = self.checkpoints + 1
+        self.target_epochs = {self.params["epochs"] * (i + 1) // s for i in range(s)}
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        if epoch in self.target_epochs:
+            if tk.hvd.is_master():
+                tk.log.get(__name__).info(
+                    f"Epoch {epoch}: Saving model to {self.checkpoint_path}"
+                )
+                # 保存の真っ最中に死んだときに大丈夫なように少し気を使った処理をする。
+                # 一度.tmpに保存してから元のを.bkにリネームして.tmpを外して.bkを削除。
+                self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path = self.checkpoint_path.parent / (
+                    self.checkpoint_path.name + ".tmp"
+                )
+                backup_path = self.checkpoint_path.parent / (
+                    self.checkpoint_path.name + ".bk"
+                )
+                if temp_path.exists():
+                    temp_path.unlink()
+                if backup_path.exists():
+                    backup_path.unlink()
+                self.model.save(str(temp_path), include_optimizer=False)
+                if self.checkpoint_path.exists():
+                    self.checkpoint_path.rename(backup_path)
+                temp_path.rename(self.checkpoint_path)
+                if backup_path.exists():
+                    backup_path.unlink()
+            tk.hvd.barrier()
+
+
+class ErrorOnNaN(keras.callbacks.Callback):
+    """NaNやinfで異常終了させる。"""
+    
+    def on_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        loss = logs.get("loss")
+        if loss is not None:
+            if np.isnan(loss) or np.isinf(loss):
+                raise RuntimeError(f"Batch {batch}: Invalid loss")
+
+
+class AUCCallback(keras.callbacks.Callback):
+    """AUCを計算する
+    EpochLoggerで表示してくれなくてかなC
+    self.params["metrics"]に登録が必要だけど...
+    
+    Args:
+        val_set (tk.data.Dataset):
+        val_data_loader (tk.data.DataLoader):
+        class_name (list):
+        use_horovod (bool):
+        check_epoch (int):
+        use_classname (bool):
+
+    """
+    def __init__(self,
+                 val_set,
+                 val_data_loader, class_names, use_classname=True,use_horovod = False,check_epoch=2):
+        super().__init__()
+        self.val_data = val_set
+        self.val_loader = val_data_loader
+        self.class_names = class_names
+        self.use_horovod = use_horovod
+        self.mean_val = 0
+        self.val_list = [0 for i in range(len(class_names))]
+        self.num_classes=len(class_names)
+        self.call_epochs=check_epoch
+        self.use_classname=use_classname
+    
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        # if epoch in self.target_epochs
+        if "end_mauc" not in self.params['metrics']:
+            self.params['metrics'].append('end_mauc')
+            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        
+        if epoch % self.call_epochs == 0:
+            y_pred_val = self.predict(self.val_data, self.val_loader)
+            meanscore = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
+            score_list = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val,average=None)
+            logs["end_mauc"] = meanscore
+            self.mean_val = meanscore
+            self.val_list = score_list
+            for i in range(self.num_classes):
+                logs["end_auc_{}".format(i)] = score_list[i]
+
+            meanscore = logs.get("end_mauc")
+            print_str=" —end_mauc: {:f},".format(meanscore)
+            if self.use_classname:
+                for i, name in enumerate(self.class_names):
+                    score = logs.get("end_auc_{}".format(i))
+                    if i==(self.num_classes-1):
+                        print_str+=" —end_auc_{0}: {1:f}".format(name, score)
+                    else:
+                        print_str += " —end_auc_{0}: {1:f},".format(name, score)
+            else:
+                for i in range(self.num_classes):
+                    score = logs.get("end_auc_{}".format(i))
+                    if i==(self.num_classes-1):
+                        print_str+=" —end_auc_{0}: {1:f}".format(i, score)
+                    else:
+                        print_str += " —end_auc_{0}: {1:f},".format(i, score)
+            if tk.hvd.is_master():
+                tk.log.get(__name__).info(print_str)
+            # self.params['metrics'].append('end_mauc')
+            # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+            #tk.hvd.barrier()
+        else:
+            logs["end_mauc"] = self.mean_val
+            for i in range(self.num_classes):
+                logs["end_auc_{}".format(i)] = self.val_list[i]
+            #tk.hvd.barrier()
+            # self.params['metrics'].append('end_mauc')
+            # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+    
+    def predict(self, dataset, data_loader):
+        with tk.log.trace_scope("auc_predict"):
+            dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
+            iterator = data_loader.iter(dataset)
+            vis=1 if tk.hvd.is_master() else 0
+            values = tk.models._predict_flow(
+                self.model, iterator, vis, None, desc="auc_predict"
+            )
+            values = np.array(list(values))
+            
+            values = tk.hvd.allgather(values) if self.use_horovod else values
+            return values
