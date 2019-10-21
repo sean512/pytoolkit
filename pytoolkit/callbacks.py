@@ -390,15 +390,16 @@ class AUCCallback(keras.callbacks.Callback):
     
     def predict(self, dataset, data_loader):
         with tk.log.trace_scope("auc_predict"):
-            dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
-            iterator = data_loader.iter(dataset)
-            # todo horovod使用時にマスタだけが表示
-            # なぜかマスタ以外0にすると2epoch目で止まる
-            #vis = 1  # if tk.hvd.is_master() else 0
-            values = tk.models._predict_flow(
-                self.model, iterator, 1, None, desc="auc_predict"
-            )
-            values = np.array(list(values))
-            
-            values = tk.hvd.allgather(values) if self.use_horovod else values
+            # dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
+            # iterator = data_loader.iter(dataset)
+            # # todo horovod使用時にマスタだけが表示
+            # # なぜかマスタ以外0にすると2epoch目で止まる
+            # #vis = 1  # if tk.hvd.is_master() else 0
+            # values = tk.models._predict_flow(
+            #     self.model, iterator, 1, None, desc="auc_predict"
+            # )
+            # values = np.array(list(values))
+            #
+            # values = tk.hvd.allgather(values) if self.use_horovod else values
+            values=tk.models.predict(self.model,dataset,data_loader,verbose=1,use_horovod=self.use_horovod)
             return values
