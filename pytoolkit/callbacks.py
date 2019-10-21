@@ -145,6 +145,72 @@ class TSVLogger(keras.callbacks.Callback):
         self.append = True  # 同じインスタンスの再利用時は自動的に追記にする
 
 
+class CSVLogger(keras.callbacks.Callback):
+    """ログを保存するコールバック。Horovod使用時はrank() == 0のみ有効。
+
+    Args:
+        filename: 保存先ファイル名。「{metric}」はmetricの値に置換される。str or pathlib.Path
+        append: 追記するのか否か。
+
+    """
+    
+    def __init__(self, filename, append=False, enabled=None):
+        super().__init__()
+        self.filename = pathlib.Path(filename)
+        self.append = append
+        self.enabled = enabled if enabled is not None else tk.hvd.is_master()
+        self.log_file = None
+        self.log_writer = None
+        self.epoch_start_time = None
+    
+    def on_train_begin(self, logs=None):
+        if self.enabled:
+            self.filename.parent.mkdir(parents=True, exist_ok=True)
+            self.log_file = self.filename.open(
+                "a" if self.append else "w", buffering=65536
+            )
+            self.log_writer = csv.writer(
+                self.log_file, delimiter=",", lineterminator="\n"
+            )
+            self.log_writer.writerow(
+                ["epoch", "lr"] + self.params["metrics"] + ["time"]
+            )
+        else:
+            self.log_file = None
+            self.log_writer = None
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        self.epoch_start_time = time.time()
+    
+    def on_epoch_end(self, epoch, logs=None):
+        assert self.epoch_start_time is not None
+        logs = logs or {}
+        logs["lr"] = K.get_value(self.model.optimizer.lr)
+        elapsed_time = time.time() - self.epoch_start_time
+        
+        def _format_metric(logs, k):
+            value = logs.get(k)
+            if value is None:
+                return "<none>"
+            return f"{value:.4f}"
+        
+        metrics = [_format_metric(logs, k) for k in self.params["metrics"]]
+        row = (
+            [epoch + 1, format(logs["lr"], ".1e")]
+            + metrics
+            + [str(int(np.ceil(elapsed_time)))]
+        )
+        if self.log_file is not None:
+            self.log_writer.writerow(row)
+            self.log_file.flush()
+    
+    def on_train_end(self, logs=None):
+        if self.log_file is not None:
+            self.log_file.close()
+        self.append = True  # 同じインスタンスの再利用時は自動的に追記にする
+
+
+
 class EpochLogger(keras.callbacks.Callback):
     """DEBUGログを色々出力するcallback。Horovod使用時はrank() == 0のみ有効。"""
     
@@ -268,9 +334,10 @@ class AUCCallback(keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
         # if epoch in self.target_epochs
-        if "end_mauc" not in self.params['metrics']:
-            self.params['metrics'].append('end_mauc')
-            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        logs["lr"] = K.get_value(self.model.optimizer.lr)
+        # if "end_mauc" not in self.params['metrics']:
+        #     self.params['metrics'].append('end_mauc')
+        #     [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
         
         if epoch % self.call_epochs == 0:
             y_pred_val = self.predict(self.val_data, self.val_loader)
@@ -303,10 +370,16 @@ class AUCCallback(keras.callbacks.Callback):
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
             # tk.hvd.barrier()
+            self.params['metrics'].append('end_mauc')
+            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+            tk.hvd.barrier()
         else:
-            logs["end_mauc"] = self.mean_val
-            for i in range(self.num_classes):
-                logs["end_auc_{}".format(i)] = self.val_list[i]
+            # logs["end_mauc"] = self.mean_val
+            # for i in range(self.num_classes):
+            #     logs["end_auc_{}".format(i)] = self.val_list[i]
+            self.params['metrics'].append('end_mauc')
+            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+            tk.hvd.barrier()
             # tk.hvd.barrier()
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
@@ -315,10 +388,11 @@ class AUCCallback(keras.callbacks.Callback):
         with tk.log.trace_scope("auc_predict"):
             dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
             iterator = data_loader.iter(dataset)
+            # todo horovod使用時にマスタだけが表示
             # なぜかマスタ以外0にすると2epoch目で止まる
-            vis = 1  # if tk.hvd.is_master() else 0
+            #vis = 1  # if tk.hvd.is_master() else 0
             values = tk.models._predict_flow(
-                self.model, iterator, vis, None, desc="auc_predict"
+                self.model, iterator, 1, None, desc="auc_predict"
             )
             values = np.array(list(values))
             
