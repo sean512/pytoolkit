@@ -239,8 +239,7 @@ class ErrorOnNaN(keras.callbacks.Callback):
 
 class AUCCallback(keras.callbacks.Callback):
     """AUCを計算する
-    EpochLoggerで表示してくれなくてかなC
-    self.params["metrics"]に登録が必要だけど...
+
 
     Args:
         val_set (tk.data.Dataset):
@@ -316,7 +315,8 @@ class AUCCallback(keras.callbacks.Callback):
         with tk.log.trace_scope("auc_predict"):
             dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
             iterator = data_loader.iter(dataset)
-            vis = 1 if tk.hvd.is_master() else 0
+            # なぜかマスタ以外0にすると2epoch目で止まる
+            vis = 1  # if tk.hvd.is_master() else 0
             values = tk.models._predict_flow(
                 self.model, iterator, vis, None, desc="auc_predict"
             )
