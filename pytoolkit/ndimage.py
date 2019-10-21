@@ -46,6 +46,7 @@ def load_with_cache(
     grayscale=False,
     use_cache=True,
     max_size=None,
+    use_temp_dir=None,
 ) -> np.ndarray:
     """画像の読み込み。
 
@@ -54,7 +55,7 @@ def load_with_cache(
         grascale: Trueならグレースケールで読み込み、FalseならRGB
         use_cache: 読み込み結果をdiskcacheライブラリでキャッシュするならTrue
         max_size: このサイズを超えるなら縮小する。int or tuple。tupleは(height, width)
-
+        use_temp_dir: キャッシュを保存する場所。Noneだったらtempfile.gettempdir()の場所を使う
     Returns:
         読み込み結果のndarray。
 
@@ -78,7 +79,7 @@ def load_with_cache(
         global _load_cache
         global _diskcache_load_failed
         if _load_cache is None and not _diskcache_load_failed:
-            temp_dir = tempfile.mkdtemp(suffix="pytoolkit")
+            temp_dir = tempfile.mkdtemp(suffix="pytoolkit",dir=use_temp_dir)
             try:
                 import diskcache
 
