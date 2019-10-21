@@ -79,7 +79,9 @@ def load_with_cache(
         global _load_cache
         global _diskcache_load_failed
         if _load_cache is None and not _diskcache_load_failed:
-            temp_dir = tempfile.mkdtemp(suffix="pytoolkit",dir=use_temp_dir)
+            # 何回も呼び出されないかこれ?
+            # マルチプロセスのときとか怖い
+            temp_dir = tempfile.mkdtemp(suffix="pytoolkit",dir=use_temp_dir) if use_temp_dir is None else use_temp_dir
             try:
                 import diskcache
 
