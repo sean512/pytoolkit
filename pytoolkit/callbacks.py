@@ -268,6 +268,10 @@ class AUCCallback(keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
         # if epoch in self.target_epochs
+        if "end_mauc" not in self.params['metrics']:
+            self.params['metrics'].append('end_mauc')
+            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        
         if epoch % self.call_epochs == 0:
             y_pred_val = self.predict(self.val_data, self.val_loader)
             meanscore = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
@@ -296,15 +300,16 @@ class AUCCallback(keras.callbacks.Callback):
                         else:
                             print_str += " —end_auc_{0}: {1:f},".format(i, score)
                 tk.log.get(__name__).info(print_str)
-            self.params['metrics'].append('end_mauc')
-            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+            # self.params['metrics'].append('end_mauc')
+            # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
             tk.hvd.barrier()
         else:
             logs["end_mauc"] = self.mean_val
             for i in range(self.num_classes):
                 logs["end_auc_{}".format(i)] = self.val_list[i]
-            self.params['metrics'].append('end_mauc')
-            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+            tk.hvd.barrier()
+            # self.params['metrics'].append('end_mauc')
+            # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
     
     def predict(self, dataset, data_loader):
         with tk.log.trace_scope("auc_predict"):
