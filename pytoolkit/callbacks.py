@@ -302,12 +302,12 @@ class AUCCallback(keras.callbacks.Callback):
                 tk.log.get(__name__).info(print_str)
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-            tk.hvd.barrier()
+            #tk.hvd.barrier()
         else:
             logs["end_mauc"] = self.mean_val
             for i in range(self.num_classes):
                 logs["end_auc_{}".format(i)] = self.val_list[i]
-            tk.hvd.barrier()
+            #tk.hvd.barrier()
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
     
