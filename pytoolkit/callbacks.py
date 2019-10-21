@@ -370,19 +370,22 @@ class AUCCallback(keras.callbacks.Callback):
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
             # tk.hvd.barrier()
-            self.params['metrics'].append('end_mauc')
-            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-            tk.hvd.barrier()
-        else:
-            # logs["end_mauc"] = self.mean_val
-            # for i in range(self.num_classes):
-            #     logs["end_auc_{}".format(i)] = self.val_list[i]
-            self.params['metrics'].append('end_mauc')
-            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-            tk.hvd.barrier()
+        #     self.params['metrics'].append('end_mauc')
+        #     [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        #     tk.hvd.barrier()
+        # else:
+        #     # logs["end_mauc"] = self.mean_val
+        #     # for i in range(self.num_classes):
+        #     #     logs["end_auc_{}".format(i)] = self.val_list[i]
+        #     self.params['metrics'].append('end_mauc')
+        #     [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        #     tk.hvd.barrier()
             # tk.hvd.barrier()
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        self.params['metrics'].append('end_mauc')
+        [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+        tk.hvd.barrier()
     
     def predict(self, dataset, data_loader):
         with tk.log.trace_scope("auc_predict"):
