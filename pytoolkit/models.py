@@ -318,9 +318,10 @@ def make_callbacks(callbacks, metrics_callbacks, bf_callbacks) -> list:
     all_callbacks.extend((callbacks or []))
     all_callbacks.append(tk.callbacks.EpochLogger())
 
-    tk.log.get(__name__).debug(
-        f"callbacks: [{all_callbacks}]"
-    )
+    if tk.hvd.is_master():
+        tk.log.get(__name__).debug(
+            f"callbacks: [{all_callbacks}]"
+        )
     return all_callbacks
 
 
