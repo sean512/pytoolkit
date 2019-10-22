@@ -305,6 +305,7 @@ class ErrorOnNaN(keras.callbacks.Callback):
 
 class AUCCallback(keras.callbacks.Callback):
     """AUCを計算する
+    AUCPrintも一緒につかえ
 
 
     Args:
@@ -372,6 +373,7 @@ class AUCCallback(keras.callbacks.Callback):
 
 class AUCPrint(keras.callbacks.Callback):
     """AUCを表示する
+     AUCCallbackも一緒につかえ
 
 
     Args:
