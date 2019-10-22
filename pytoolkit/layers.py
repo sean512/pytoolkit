@@ -541,7 +541,10 @@ class ChannelPair2D(keras.layers.Layer):
 
 
 class StocasticAdd(keras.layers.Layer):
-    """Stochastic Depth <http://arxiv.org/abs/1603.09382>"""
+    """Stochastic Depth <http://arxiv.org/abs/1603.09382>
+    drop_rateはdropoutと同じ使い方
+    論文の数値と反対だと思うので注意
+    """
 
     def __init__(self, drop_rate, *args, **kwargs):
         super().__init__(*args, **kwargs)
