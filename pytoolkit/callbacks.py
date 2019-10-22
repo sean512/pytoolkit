@@ -313,13 +313,12 @@ class AUCCallback(keras.callbacks.Callback):
         class_name (list):
         use_horovod (bool):
         check_epoch (int):
-        use_classname (bool):
 
     """
     
     def __init__(self,
                  val_set,
-                 val_data_loader, class_names, use_classname=True, use_horovod=False, check_epoch=2):
+                 val_data_loader, class_names, use_horovod=False, check_epoch=2):
         super().__init__()
         self.val_data = val_set
         self.val_loader = val_data_loader
@@ -329,17 +328,15 @@ class AUCCallback(keras.callbacks.Callback):
         self.val_list = [0 for i in range(len(class_names))]
         self.num_classes = len(class_names)
         self.call_epochs = check_epoch
-        self.use_classname = use_classname
     
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
         # if epoch in self.target_epochs
         logs["lr"] = K.get_value(self.model.optimizer.lr)
-        # if "end_mauc" not in self.params['metrics']:
-        #     self.params['metrics'].append('end_mauc')
-        #     [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-        if tk.hvd.is_master():
-            tk.log.get(__name__).info(print(epoch))
+        if "end_mauc" not in self.params['metrics']:
+            self.params['metrics'].append('end_mauc')
+            [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+
         if epoch % self.call_epochs == 0:
             y_pred_val = self.predict(self.val_data, self.val_loader)
             meanscore = sklearn.metrics.roc_auc_score(self.val_data.labels, y_pred_val)
@@ -349,57 +346,66 @@ class AUCCallback(keras.callbacks.Callback):
             self.val_list = score_list
             for i in range(self.num_classes):
                 logs["end_auc_{}".format(i)] = score_list[i]
-            
-        meanscore = logs.get("end_mauc")
-        print_str = " —end_mauc: {:f},".format(meanscore)
-        if self.use_classname:
-            for i, name in enumerate(self.class_names):
-                score = logs.get("end_auc_{}".format(i))
-                if i == (self.num_classes - 1):
-                    print_str += " —end_auc_{0}: {1:f}".format(name, score)
-                else:
-                    print_str += " —end_auc_{0}: {1:f},".format(name, score)
+            # self.params['metrics'].append('end_mauc')
+            # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
+            # tk.hvd.barrier()
         else:
+            logs["end_mauc"] = self.mean_val
             for i in range(self.num_classes):
-                score = logs.get("end_auc_{}".format(i))
-                if i == (self.num_classes - 1):
-                    print_str += " —end_auc_{0}: {1:f}".format(i, score)
-                else:
-                    print_str += " —end_auc_{0}: {1:f},".format(i, score)
-        if tk.hvd.is_master():
-            tk.log.get(__name__).info(print_str)
-            # self.params['metrics'].append('end_mauc')
-            # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-            # tk.hvd.barrier()
-        #     self.params['metrics'].append('end_mauc')
-        #     [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-        #     tk.hvd.barrier()
-        # else:
-        #     # logs["end_mauc"] = self.mean_val
-        #     # for i in range(self.num_classes):
-        #     #     logs["end_auc_{}".format(i)] = self.val_list[i]
-        #     self.params['metrics'].append('end_mauc')
-        #     [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-        #     tk.hvd.barrier()
+                logs["end_auc_{}".format(i)] = self.val_list[i]
             # tk.hvd.barrier()
             # self.params['metrics'].append('end_mauc')
             # [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-        self.params['metrics'].append('end_mauc')
-        [self.params['metrics'].append("end_auc_{}".format(i)) for i in range(self.num_classes)]
-        #tk.hvd.barrier()
-    
+
     def predict(self, dataset, data_loader):
         with tk.log.trace_scope("auc_predict"):
-            # dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
-            # iterator = data_loader.iter(dataset)
-            # # todo horovod使用時にマスタだけが表示
-            # # なぜかマスタ以外0にすると2epoch目で止まる
-            # #vis = 1  # if tk.hvd.is_master() else 0
-            # values = tk.models._predict_flow(
-            #     self.model, iterator, 1, None, desc="auc_predict"
-            # )
-            # values = np.array(list(values))
-            #
-            # values = tk.hvd.allgather(values) if self.use_horovod else values
-            values=tk.models.predict(self.model,dataset,data_loader,verbose=1,use_horovod=self.use_horovod)
+            dataset = tk.hvd.split(dataset) if self.use_horovod else dataset
+            iterator = data_loader.iter(dataset)
+            values = tk.models._predict_flow(
+                self.model, iterator, 1 if tk.hvd.is_master() else 0, None, desc="auc_predict"
+            )
+            values = np.array(list(values))
+        
+            values = tk.hvd.allgather(values) if self.use_horovod else values
             return values
+
+
+class AUCPrint(keras.callbacks.Callback):
+    """AUCを表示する
+
+
+    Args:
+        class_name (list):
+        check_epoch (int):
+        use_classname (bool):
+
+    """
+    def __init__(self, class_names, use_classname=True, check_epoch=2):
+        super(AUCPrint, self).__init__()
+        self.class_names = class_names
+        self.num_classes = len(class_names)
+        self.call_epochs = check_epoch
+        self.use_classname = use_classname
+    
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        if epoch % self.call_epochs == 0:
+            if tk.hvd.is_master():
+                meanscore = logs.get("end_mauc")
+                print_str = " —end_mauc: {:f},".format(meanscore)
+                if self.use_classname:
+                    for i, name in enumerate(self.class_names):
+                        score = logs.get("end_auc_{}".format(i))
+                        if i == (self.num_classes - 1):
+                            print_str += " —end_auc_{0}: {1:f}".format(name, score)
+                        else:
+                            print_str += " —end_auc_{0}: {1:f},".format(name, score)
+                else:
+                    for i in range(self.num_classes):
+                        score = logs.get("end_auc_{}".format(i))
+                        if i == (self.num_classes - 1):
+                            print_str += " —end_auc_{0}: {1:f}".format(i, score)
+                        else:
+                            print_str += " —end_auc_{0}: {1:f},".format(i, score)
+                tk.log.get(__name__).info(print_str)
+            tk.hvd.barrier()
