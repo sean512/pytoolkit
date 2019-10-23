@@ -1002,7 +1002,7 @@ class ParallelGridGather(keras.layers.Layer):
         # assert input_shape[1] % self.pool_size[0] == 0  # パディングはとりあえず未対応
         # assert input_shape[2] % self.pool_size[1] == 0  # パディングはとりあえず未対応
         b, h, w, c = input_shape
-        return b, h *(self.r/2), w *(self.r/2), c
+        return b, h *(self.r**0.5), w *(self.r**0.5), c
 
     def call(self, inputs, **kwargs):
         del kwargs
