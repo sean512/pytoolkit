@@ -569,6 +569,46 @@ class StocasticAdd(keras.layers.Layer):
         return K.in_train_phase(_train, _test, training)
 
 
+class SyncStochasticAdd(keras.layers.Layer):
+    """Stochastic Depth <http://arxiv.org/abs/1603.09382>
+    horovod対応版(遅そう)
+    drop_rateはdropoutと同じ使い方
+    論文の数値と反対だと思うので注意
+    """
+
+    def __init__(self, drop_rate=0.5, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.drop_rate = drop_rate
+
+    def compute_output_shape(self, input_shape):
+        assert len(input_shape) == 2
+        assert input_shape[0] == input_shape[1]
+        return input_shape[0]
+
+    def call(self, inputs, training=None, **kwargs):  # pylint: disable=arguments-differ
+        del kwargs
+        base, residual = inputs
+
+        def _train():
+            drop = K.random_binomial((), p=self.drop_rate)
+            # 乱数をrootから他のGPUに配る
+            if tk.hvd.initialized():
+                # todo 毎回インポートするのでコスト高そう
+                import horovod.tensorflow as _hvd
+                drop = _hvd.broadcast(drop, 0)
+            return K.switch(drop, lambda: base, lambda: base + residual)
+
+        def _test():
+            return base + residual * self.drop_rate
+
+        return K.in_train_phase(_train, _test, training)
+    
+    def get_config(self):
+        config = {"drop_rate": self.drop_rate}
+        base_config = super().get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
 class SyncBatchNormalization(keras.layers.BatchNormalization):
     """Sync BN。"""
 
@@ -958,7 +998,11 @@ class ParallelGridGather(keras.layers.Layer):
         self.r = r
 
     def compute_output_shape(self, input_shape):
-        return input_shape
+        assert len(input_shape) == 4
+        # assert input_shape[1] % self.pool_size[0] == 0  # パディングはとりあえず未対応
+        # assert input_shape[2] % self.pool_size[1] == 0  # パディングはとりあえず未対応
+        b, h, w, c = input_shape
+        return b, h *(self.r**0.5), w *(self.r**0.5), c
 
     def call(self, inputs, **kwargs):
         del kwargs
