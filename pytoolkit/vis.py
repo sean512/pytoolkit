@@ -82,5 +82,7 @@ class GradCamVisualizer:
         if not isinstance(model_inputs, list):
             model_inputs = [model_inputs]
         mask = self.get_mask_func(model_inputs + [0])[0]
+        if len(mask.shape)==3:
+            mask=np.squeeze(mask)
         assert len(mask.shape) == 2
         return mask
