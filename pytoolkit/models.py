@@ -187,11 +187,16 @@ def fit(
     class_weight: dict = None,
     epochs: int = 1800,
     callbacks: list = None,
+    metrics_callbacks: list = None,
+    bf_callbacks: list = None,
     verbose: int = 1,
     initial_epoch: int = 0,
     use_multiprocessing: bool = False,
     workers: int = 1,
     max_queue_size: int = 10,
+    use_shuffle: bool = True,
+    val_shuffle: bool = False,
+    horovod_is: bool = True,
 ):
     """独自のtraining loopになる予定の関数。
 
@@ -205,11 +210,16 @@ def fit(
         class_weight: クラスごとの重みのdict
         epochs: エポック数
         callbacks: コールバック。EpochLoggerとErrorOnNaNは自動追加。
+        metrics_callbacks: BroadcastGlobalVariablesとMetricAverageの間に置きたいcallback
+        bf_callbacks: BroadcastGlobalVariablesの前に置きたいcallback
         verbose: 1ならプログレスバー表示、2ならepoch毎の結果だけ表示。
         initial_epoch: 学習を開始するエポック数 - 1
         use_multiprocessing: Trueならマルチプロセス
         workers: ワーカー数
         max_queue_size: キューの最大サイズ
+        use_shuffle: Trueなら学習用データをシャッフルする。mixup使用時はTrueじゃなければ動かない
+        val_shuffle: Trueなら検証データをシャッフルする。
+        horovod_is: Trueならhorovod使用時の用のバッチサイズ計算に切り替える
 
     """
     if validation_freq == 0:
@@ -224,14 +234,14 @@ def fit(
         )
     assert (val_set is None) == (val_data_loader is None)
 
-    train_iterator = train_data_loader.iter(train_set, shuffle=True, use_horovod=True)
+    train_iterator = train_data_loader.iter(train_set, shuffle=use_shuffle, use_horovod=horovod_is)
     val_iterator = (
-        val_data_loader.iter(val_set, shuffle=True, use_horovod=True)
+        val_data_loader.iter(val_set, shuffle=val_shuffle, use_horovod=horovod_is)
         if val_set is not None and val_data_loader is not None
         else None
     )
 
-    callbacks = make_callbacks(callbacks)
+    callbacks = make_callbacks(callbacks, metrics_callbacks, bf_callbacks)
 
     fit_kwargs = {}
     if validation_freq is not None:
@@ -246,6 +256,7 @@ def fit(
             callbacks=callbacks,
             verbose=verbose if tk.hvd.is_master() else 0,
             initial_epoch=initial_epoch,
+            shuffle=use_shuffle,
             use_multiprocessing=use_multiprocessing,
             workers=workers,
             max_queue_size=max_queue_size,
@@ -275,12 +286,46 @@ def make_validation_freq(
         int(len(val_set) / (len(train_set) * max_val_per_train)),
         1,
     )
+    # validation_freqの値を表示
+    tk.log.get(__name__).info(
+        f"validation_freq: {validation_freq}"
+    )
+    
     # 最後のepochはvalidationしたいので、そこからvalidation_freq毎に。
     validation_freq = list(range(epochs, 0, -validation_freq))
     return validation_freq
 
 
-def make_callbacks(callbacks):
+def make_callbacks(callbacks, metrics_callbacks, bf_callbacks) -> list:
+    """
+    old_make_callbacksが元
+    horovod使用時用の改良をした
+    
+    :param callbacks:
+    :param metrics_callbacks: BroadcastGlobalVariablesとMetricAverageの間に置きたいcallback
+    :param bf_callbacks: BroadcastGlobalVariablesの前に置きたいcallback
+    :return:
+    """
+    horovod_is= True if tk.hvd.initialized() and tk.hvd.size() > 1 else False
+    all_callbacks=(bf_callbacks or []).copy()
+    all_callbacks.append(tk.callbacks.ErrorOnNaN())
+    if horovod_is:
+        all_callbacks.append(tk.hvd.get().callbacks.BroadcastGlobalVariablesCallback(0))
+    all_callbacks.extend((metrics_callbacks or []))
+    if horovod_is:
+        all_callbacks.append(tk.hvd.get().callbacks.MetricAverageCallback())
+        
+    all_callbacks.extend((callbacks or []))
+    all_callbacks.append(tk.callbacks.EpochLogger())
+
+    if tk.hvd.is_master():
+        tk.log.get(__name__).debug(
+            f"callbacks: [{all_callbacks}]"
+        )
+    return all_callbacks
+
+
+def old_make_callbacks(callbacks):
     """callbacksをいい感じにする。"""
     callbacks = (callbacks or []) + [
         tk.callbacks.EpochLogger(),

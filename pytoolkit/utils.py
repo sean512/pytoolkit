@@ -3,6 +3,7 @@ import functools
 import os
 import pathlib
 import pickle
+import random
 import sys
 import traceback
 import typing
@@ -11,6 +12,7 @@ import joblib
 import numpy as np
 
 import pytoolkit as tk
+import tensorflow as tf
 
 
 def find_by_name(arr, name):
@@ -162,3 +164,20 @@ def _binary_array_to_hex(arr: np.ndarray) -> str:
     bit_string = ''.join(str(b) for b in 1 * arr.flatten())
     width = int(np.ceil(len(bit_string) / 4))
     return '{:0>{width}x}'.format(int(bit_string, 2), width=width)
+
+
+def seed_set(seed_num: int):
+    """乱数シードを設定する
+
+    Args:
+        seed_num (int): 種にしたい数値
+
+    """
+    
+    # dotenv使ってもいいかも
+    tk.log.get(__name__).debug("設定予定 乱数シード値:{0}".format(seed_num))
+    os.environ['PYTHONHASHSEED'] = str(seed_num)
+    np.random.seed(seed_num)
+    random.seed(seed_num)
+    tf.set_random_seed(seed_num)
+    tk.log.get(__name__).info("乱数シード値 設定完了")
