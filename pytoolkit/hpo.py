@@ -22,6 +22,7 @@ def optimize(
     n_trials=None,
     timeout=None,
     n_jobs=1,
+    use_hvd=False,
     catch=(Exception,),
 ):
     """Optunaの簡易ラッパー。
@@ -39,6 +40,7 @@ def optimize(
         n_trials: study.optimizeの引数
         timeout: study.optimizeの引数
         n_jobs: study.optimizeの引数
+        use_hvd:hvd使うか
         catch: study.optimizeの引数
 
     Returns:
@@ -68,8 +70,9 @@ def optimize(
             value = score_fn(params)
         logger.debug(f"value = {value}, params = {params}")
         return value
-
-    study = optuna.create_study(
+    tk.hvd.barrier()
+    
+    study_create = optuna.create_study(
         storage=storage,
         sampler=sampler,
         pruner=pruner,
@@ -77,6 +80,15 @@ def optimize(
         direction=direction,
         load_if_exists=load_if_exists,
     )
+    if use_hvd:
+        import mpi4py
+    
+        mpi4py.rc.initialize = False
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        study = optuna.integration.MPIStudy(study_create, comm)
+    else:
+        study=study_create
     try:
         study.optimize(
             func=objective,

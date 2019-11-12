@@ -572,6 +572,7 @@ class StocasticAdd(keras.layers.Layer):
 class SyncStochasticAdd(keras.layers.Layer):
     """Stochastic Depth <http://arxiv.org/abs/1603.09382>
     horovod対応版(遅そう)
+    左がショートカット、右が中身
     drop_rateはdropoutと同じ使い方
     論文の数値と反対だと思うので注意
     """
