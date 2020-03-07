@@ -25,10 +25,21 @@ def init() -> None:
     if not _initialized:
         try:
             get().init()
+
+            # mpi4pyを使うにはmulti-threadingが必要らしい
+            # https://github.com/horovod/horovod#mpi4py
+            assert get().mpi_threads_supported()
+
+            gpus = tf.config.experimental.list_physical_devices("GPU")
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            if gpus:
+                tf.config.experimental.set_visible_devices(
+                    gpus[get().local_rank()], "GPU"
+                )
             _initialized = True
         except ImportError:
             tk.log.get(__name__).warning("Horovod読み込み失敗", exc_info=True)
-
 
 def initialized() -> bool:
     """初期化済みなのか否か(Horovodを使うのか否か)"""
@@ -62,12 +73,22 @@ def is_local_master() -> bool:
 
 def allgather(value):
     """全ワーカーからデータを集める。"""
-    return get().allgather(value) if initialized() else value
+    if initialized():
+        value = get().allgather(value)
+        # tensorが来たらnumpy化
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+    return value
 
 
 def allreduce(value, average: bool = True):
     """全ワーカーからデータを集める。"""
-    return get().allreduce(value, average=average) if initialized() else value
+    if initialized():
+        value = get().allreduce(value, average=average)
+        # tensorが来たらnumpy化
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+    return value
 
 
 def barrier() -> None:
