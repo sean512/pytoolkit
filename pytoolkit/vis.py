@@ -13,11 +13,13 @@ class GradCamVisualizer:
         model: 対象のモデル。画像分類で最後がpooling_class+Dense+softmaxで分類している前提。
         output_index: 使う出力(softmax)のインデックス。(クラスのindex)
         pooling_class: 分類直前のpoolingのクラス。(既定値はGlobalAveragePooling2D)
+        multi_output: マルチ出力の場合にcamを作りたい出力の番号
 
     """
 
     def __init__(
-        self, model: keras.models.Model, output_index: int, pooling_class: type = None
+        self, model: keras.models.Model, output_index: int, pooling_class: type = None,
+        multi_output:int =0
     ):
         pooling_class = pooling_class or keras.layers.GlobalAveragePooling2D
         # pooling_classへの入力テンソルを取得
@@ -28,7 +30,10 @@ class GradCamVisualizer:
                 break
         assert map_output is not None
         # 関数を作成
-        grad = K.gradients(model.output[0, output_index], map_output)[0]
+        if multi_output==0:
+            grad = K.gradients(model.output[0, output_index], map_output)[0]
+        else:
+            grad = K.gradients(model.output[multi_output][0, output_index], map_output)[0]
         # mask = K.maximum(0.0, K.sum(map_output * grad, axis=-1)[0, :, :])
         # mask = mask / (K.max(mask) + 1e-3)  # [0, 1)
         mask = K.sum(map_output * grad, axis=-1)
