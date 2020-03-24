@@ -354,7 +354,9 @@ class RandomAutoContrast(A.ImageOnlyTransform):
     https://arxiv.org/abs/1805.09501
 
     """
-
+    def __init__(self, always_apply=False, p=0.5):
+        super().__init__(always_apply=always_apply, p=p)
+        
     def apply(self, image, **params):
         return tk.ndimage.auto_contrast(image)
 
