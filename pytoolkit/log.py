@@ -1,15 +1,14 @@
 """ログ関連。
-
 fmtに色々出したいときはこの辺を参照：
 https://docs.python.jp/3/library/logging.html#logrecord-attributes
-
 """
-import contextlib
 import functools
 import logging
 import logging.handlers
 import pathlib
 import time
+
+import tensorflow as tf
 
 import pytoolkit as tk
 
@@ -26,6 +25,7 @@ def init(
     file_fmt="%(asctime)s [%(levelname)-5s] %(message)s <%(name)s> %(filename)s:%(lineno)d",
     matplotlib_level=logging.WARNING,
     pil_level=logging.INFO,
+    close_tf_logger=True,
 ):
     """ルートロガーの初期化。"""
     logger = get(None)
@@ -44,10 +44,14 @@ def init(
                 fmt=file_fmt,
             )
         )
+    # ログが出すぎる他のライブラリなどのための調整
     if matplotlib_level is not None:
         get("matplotlib").setLevel(matplotlib_level)
     if pil_level is not None:
         get("PIL").setLevel(pil_level)
+    if close_tf_logger:
+        assert tf.get_logger().propagate
+        tk.log.close(tf.get_logger())
 
 
 def get(name):
@@ -76,7 +80,7 @@ def file_handler(
     level=logging.DEBUG,
     fmt="[%(levelname)-5s] %(message)s <%(name)s:%(filename)s:%(lineno)d>",
 ):
-    """RotatingFileHandler/FileHandlerを作成して返す。levelは文字列で'INFO'とかも指定可。(Python>=3.2)"""
+    """RotatingFileHandler/FileHandlerを作成して返す。levelは文字列で'INFO'とかも指定可。"""
     output_path = pathlib.Path(output_path)
     output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
     if rotate:
@@ -101,38 +105,52 @@ def close(logger):
         logger.removeHandler(handler)
 
 
-def trace(process_name=None):
-    """関数の開始・終了をログるdecorator。
-
+class trace:
+    """開始・終了をログdecorator＆context manager。
     Args:
-        process_name: ログに出力する処理の名前。(Noneなら関数名)
-
+        process_name: ログに出力する処理の名前。(Noneなら関数名。context managerとしての使用時は必須)
+        level: ログレベル。文字列で'DEBUG'とかも指定可。
+    Examples:
+        decoratorの例::
+            @tk.log.trace()
+            def func()
+                pass
+        context managerの例::
+            with tk.log.trace("process"):
+                process()
     """
 
-    def decorator(func):
+    def __init__(self, process_name=None, level=logging.INFO):
+        self.process_name = process_name
+        self.level = level
+        self.start_time = None
+
+    def __call__(self, func):
         @functools.wraps(func)
-        def traced_func(*args, **kwargs):
-            with trace_scope(process_name or func.__qualname__):
-                return func(*args, **kwargs)
+        def traced_func(*args, **kwds):
+            with self.__class__(
+                process_name=self.process_name or func.__qualname__, level=self.level
+            ):
+                return func(*args, **kwds)
 
         return traced_func
 
-    return decorator
+    def __enter__(self):
+        assert self.process_name is not None
+        assert self.start_time is None
+        get(__name__).log(self.level, f"{self.process_name} start")
+        self.start_time = time.time()
+        return self
 
-
-@contextlib.contextmanager
-def trace_scope(process_name):
-    """withで使うと、処理前後でログを出力する。
-
-    Args:
-        process_name: ログに出力する処理の名前。
-
-    """
-    logger = get(__name__)
-    logger.debug(f"{process_name} 開始")
-    start_time = time.time()
-    try:
-        yield
-    finally:
-        elapsed_time = time.time() - start_time
-        logger.debug(f"{process_name} 終了 ({elapsed_time:.3f}[s])")
+    def __exit__(self, *exc):
+        elapsed_time = time.time() - self.start_time
+        if exc[0] is None:
+            get(__name__).log(
+                self.level, f"{self.process_name} done in {elapsed_time:.1f} s"
+            )
+        else:
+            get(__name__).log(
+                self.level, f"{self.process_name} error in {elapsed_time:.1f} s"
+            )
+        self.start_time = None  # チェック用に戻しておく
+        return False
