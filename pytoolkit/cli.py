@@ -139,7 +139,7 @@ class App:
                 tk.hvd.init()
             # 美しくないけどゆるして
             if self.log_option_is:
-                final_outputname=self.output_dir / f"{self.current_command}.log" if command["logfile"] and self.output_dir is not None \
+                final_outputname=self.output_dir / f"{self.current_command}.log" if command.logfile and self.output_dir is not None \
                     else None if len(self.log_output_path) == 0 else self.log_output_path
                 tk.log.init(final_outputname,append=self.log_append,rotate=self.log_rotate,max_bytes=self.log_max_bytes,
                             backup_count=self.log_backup_count,stream_fmt=self.log_stream_fmt,file_level=self.log_file_level,

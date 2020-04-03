@@ -3,6 +3,7 @@ import numbers
 import typing
 
 import numpy as np
+import scipy
 
 
 def set_ndarray_format() -> None:
@@ -19,11 +20,16 @@ def set_ndarray_format() -> None:
             result += f" values={s}"
             result += f">"
             return result
-        except BaseException:
+        except Exception:
             return np.array_repr(x)  # 念のため
 
     np.set_string_function(format_ndarray, repr=False)
     np.set_string_function(format_ndarray, repr=True)
+
+
+def set_numpy_error() -> None:
+    """nanとかが出るときにraiseするように設定する。"""
+    np.seterr(all="raise")
 
 
 def sigmoid(x):
@@ -37,19 +43,21 @@ def logit(x, epsilon=1e-7):
     return np.log(x / (1 - x))
 
 
+def softmax(x, axis=-1):
+    """ソフトマックス関数。"""
+    return scipy.special.softmax(x, axis=axis)
+
+
 def cosine_most_similars(
     v1: np.ndarray, v2: np.ndarray, batch_size: int = 10000
 ) -> typing.Tuple[np.ndarray, np.ndarray]:
     """v1の各ベクトルに対して、v2の中で最もコサイン類似度の大きいindexとその類似度を返す。
-
     Args:
         v1: 基準となるベクトル (shape=(N, C))
         v2: 探す対象のベクトル (shape=(M, C))
         batch_size: いくつのベクトルをまとめて処理するのか (メモリ使用量に影響)
-
     Returns:
         indexの配列と類似度の配列 (shape=(N,))
-
     """
     assert v1.ndim == 2
     assert v2.ndim == 2
