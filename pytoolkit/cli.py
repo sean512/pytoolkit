@@ -2,25 +2,25 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import pathlib
+import sys
 import typing
+
+import tensorflow as tf
 
 import pytoolkit as tk
 
 
 class App:
     """MLコンペとか用簡易フレームワーク。
-
     ログの初期化とかのボイラープレートコードを出来るだけ排除するためのもの。
-
     Args:
         output_dir: ログ出力先ディレクトリ
-
-    Fields:
+    Attributes:
         output_dir: ログ出力先ディレクトリ
         current_command: 現在実行中のコマンド名
-
     """
 
     def __init__(self, output_dir: typing.Union[tk.typing.PathLike, None]):
@@ -28,13 +28,13 @@ class App:
         self.inits: typing.List[typing.Callable[[], None]] = [
             tk.utils.better_exceptions,
             tk.math.set_ndarray_format,
+            tk.math.set_numpy_error,
         ]
         self.terms: typing.List[typing.Callable[[], None]] = []
-        self.commands: typing.Dict[str, typing.Dict[str, typing.Any]] = {}
+        self.commands: typing.Dict[str, Command] = {}
         self.current_command: typing.Optional[str] = None
-        
         self.log_option_is=False
-
+        
     def init(self):
         """前処理の追加用デコレーター"""
 
@@ -73,57 +73,73 @@ class App:
         self.log_file_fmt = file_fmt
         self.log_matplotlib_level = matplotlib_level
         self.log_pil_level = pil_level
-    
-    def command(self, logfile: bool = True, then: str = None):
+        
+    def command(
+        self,
+        logfile: bool = True,
+        then: str = None,
+        use_horovod: bool = False,
+        distribute_strategy_fn: typing.Callable[[], tf.distribute.Strategy] = None,
+        args: typing.Dict[str, typing.Dict[str, typing.Any]] = None,
+    ):
         """コマンドの追加用デコレーター。
-
+        コマンド名は関数名。ただし_は-に置き換えたもの。
         Args:
-            logfile: ログファイルを出力するのか否か。
-            then: 当該コマンドが終わった後に続けて実行するコマンドの名前。
-
+            logfile: ログファイルを出力するのか否か
+            then: 当該コマンドが終わった後に続けて実行するコマンドの名前
+            use_horovod: horovodを使うならTrue
+            distribute_strategy_fn: tf.distributeを使う場合のStrategyの作成関数
+            args: add_argumentの引数。(例: args={"--x": {"type": int}})
         """
         assert not logfile or self.output_dir is not None
 
-        def _decorator(func):
-            if func.__name__ in self.commands:
-                raise ValueError(f"Duplicated command: {func.__name__}")
-            self.commands[func.__name__] = {
-                "func": func,
-                "logfile": logfile,
-                "then": then,
-            }
-            return func
+        def _decorator(entrypoint: typing.Callable):
+            command_name = entrypoint.__name__.replace("_", "-")
+            if command_name in self.commands:
+                raise ValueError(f"Duplicated command: {command_name}")
+            self.commands[command_name] = Command(
+                entrypoint=entrypoint,
+                logfile=logfile,
+                then=then,
+                use_horovod=use_horovod,
+                distribute_strategy_fn=distribute_strategy_fn,
+                args=args,
+            )
+            return entrypoint
 
         return _decorator
 
-    def run(self, argv: list = None, default: str = None):
+    def run(self, argv: typing.Sequence[str] = None, default: str = None):
         """実行。
-
         Args:
-            args: 引数。(既定値はsys.argv)
+            argv: 引数。(既定値はsys.argv)
             default: 未指定時に実行するコマンド名 (既定値は先頭のコマンド)
-
         """
         commands = self.commands.copy()
         if "ipy" not in commands:
-            commands["ipy"] = {"func": self._ipy, "logfile": False, "then": None}
-        command_names = list(commands)
-        default = default or command_names[0]
+            commands["ipy"] = Command(entrypoint=_ipy, logfile=False)
+        default = default or list(commands)[0]
 
         parser = argparse.ArgumentParser()
-        parser.add_argument(
-            "command", choices=command_names, nargs="?", default=default
-        )
-        args = parser.parse_args(argv)
+        subparsers = parser.add_subparsers(dest="command")
+        for command_name, command in commands.items():
+            p = subparsers.add_parser(command_name)
+            for k, v in (command.args or {}).items():
+                p.add_argument(k, **v)
+        args = vars(parser.parse_args(argv))
 
-        self.current_command = args.command
+        self.current_command = args["command"] or default
+        args.pop("command")
         while True:
             assert self.current_command is not None
             command = commands[self.current_command]
-            
+
+            # horovod
+            if command.use_horovod:
+                tk.hvd.init()
             # 美しくないけどゆるして
             if self.log_option_is:
-                final_outputname=self.output_dir / f"{command['func'].__name__}.log" if command["logfile"] and self.output_dir is not None \
+                final_outputname=self.output_dir / f"{self.current_command}.log" if command["logfile"] and self.output_dir is not None \
                     else None if len(self.log_output_path) == 0 else self.log_output_path
                 tk.log.init(final_outputname,append=self.log_append,rotate=self.log_rotate,max_bytes=self.log_max_bytes,
                             backup_count=self.log_backup_count,stream_fmt=self.log_stream_fmt,file_level=self.log_file_level,
@@ -131,39 +147,83 @@ class App:
             else:
                 # ログ初期化
                 tk.log.init(
-                    self.output_dir / f"{command['func'].__name__}.log"
-                    if command["logfile"] and self.output_dir is not None
+                    self.output_dir / f"{self.current_command}.log"
+                    if command.logfile and self.output_dir is not None
                     else None
                 )
             # 前処理
             for f in self.inits:
-                with tk.log.trace_scope(f.__qualname__):
+                with tk.log.trace(f.__qualname__):
                     f()
             try:
-                with tk.log.trace_scope(command["func"].__qualname__):
-                    command["func"]()
-            except BaseException as e:
-                # KeyboardInterrupt以外で、かつ
+                with tk.log.trace(command.entrypoint.__qualname__):
+                    if command.distribute_strategy_fn is not None:
+                        command.distribute_strategy = command.distribute_strategy_fn()
+                        with command.distribute_strategy.scope():
+                            tk.log.get(__name__).info(
+                                f"Number of devices: {self.num_replicas_in_sync}"
+                            )
+                            command.entrypoint(**args)
+                    else:
+                        command.entrypoint(**args)
+            except Exception as e:
                 # ログファイルを出力する(ような重要な)コマンドの場合のみ通知を送信
-                if e is not KeyboardInterrupt and command["logfile"]:
-                    tk.notifications.post(tk.utils.format_exc())
-                raise
+                if command.logfile:
+                    tk.notifications.post(f"{type(e).__name__}: {e}")
+                # ログ出力して強制終了 (これ以上raiseしても少しトレース増えるだけなので)
+                tk.log.get(__name__).critical("Application error.", exc_info=True)
+                sys.exit(1)
             finally:
                 # 後処理
                 for f in self.terms:
-                    with tk.log.trace_scope(f.__qualname__):
+                    with tk.log.trace(f.__qualname__):
                         f()
 
             # 次のコマンド
-            self.current_command = command["then"]
+            self.current_command = command.then
             if self.current_command is None:
                 break
+            args = {}
 
-    def _ipy(self):
-        """自動追加されるコマンド。ipython。"""
-        import sys
-        import IPython
+    @property
+    def num_replicas_in_sync(self) -> int:
+        """現在のコマンドのdistribute_strategy.num_replicas_in_syncを取得する。"""
+        if self.current_command is None:
+            return 1
+        command = self.commands.get(self.current_command)
+        if command is None or command.distribute_strategy is None:
+            return 1
+        return command.distribute_strategy.num_replicas_in_sync
 
-        m = sys.modules["__main__"]
-        user_ns = {k: getattr(m, k) for k in dir(m)}
-        IPython.start_ipython(argv=[], user_ns=user_ns)
+
+@dataclasses.dataclass()
+class Command:
+    """コマンド。
+    Args:
+        entrypoint: 呼び出される関数
+        logfile: ログファイルを出力するのか否か
+        then: 当該コマンドが終わった後に続けて実行するコマンドの名前
+        use_horovod: horovodを使うならTrue
+        distribute_strategy_fn: tf.distributeを使う場合のStrategyの作成関数
+        distribute_strategy: 作成したStrategy
+        args: add_argumentの引数。(例: args={"--x": {"type": int}})
+    """
+
+    entrypoint: typing.Callable
+    logfile: bool = True
+    then: typing.Optional[str] = None
+    use_horovod: bool = False
+    distribute_strategy_fn: typing.Optional[
+        typing.Callable[[], tf.distribute.Strategy]
+    ] = None
+    distribute_strategy: typing.Optional[tf.distribute.Strategy] = None
+    args: typing.Optional[typing.Dict[str, typing.Dict[str, typing.Any]]] = None
+
+
+def _ipy():
+    """自動追加されるコマンド。ipython。"""
+    import IPython
+
+    m = sys.modules["__main__"]
+    user_ns = {k: getattr(m, k) for k in dir(m)}
+    IPython.start_ipython(argv=["--ext=autoreload"], user_ns=user_ns)
