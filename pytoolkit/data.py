@@ -1,32 +1,32 @@
 """学習時のデータの読み込み周り。
-
 dataset: dataの集合
 data: 1件のデータ
 sample: 学習時に使用する1件のデータ (1件以上のdataから作られるもの) (という事にしている)
 batch: sampleのバッチサイズ個の集合
-
 """
-# pylint: disable=unsubscriptable-object
 from __future__ import annotations
 
-import abc
 import dataclasses
 import random
-import time
 import typing
 
 import numpy as np
 import pandas as pd
+import tensorflow as tf
 
 import pytoolkit as tk
 
-from . import keras
+# Dataset.dataの型
+DataType = typing.Union[typing.Sequence[typing.Any], pd.DataFrame, dict]
+# Dataset.labelsの型
+LabelsType = typing.Union[
+    np.ndarray, typing.List[np.ndarray], typing.Dict[str, np.ndarray]
+]
 
 
 @dataclasses.dataclass()
 class Dataset:
     """訓練データなど。
-
     Args:
         data: 入力データ
         labels: ラベル
@@ -34,12 +34,14 @@ class Dataset:
         weights: サンプルごとの重み
         ids: ID (入力データにしないIDが別途必要な場合用)
         init_score: LightGBMなど用。boostingのベーススコア。
-        metadata: メタデータ。色々独自に入れておいてOK。sliceとかではそのままコピーされたりするので注意。
-
+        metadata: メタデータ。色々独自に入れておいてOK。
+                  sliceとかではそのままコピーされたりするので注意。
+    get_dataをオーバーライドすることで逐次読み込みなども可能とする。
+    (ただし、sliceとかで__init__が呼ばれるので注意。)
     """
 
-    data: typing.Union[typing.Sequence[typing.Any], pd.DataFrame, dict]
-    labels: np.ndarray = None
+    data: DataType
+    labels: LabelsType = None
     groups: np.ndarray = None
     weights: np.ndarray = None
     ids: np.ndarray = None
@@ -50,21 +52,42 @@ class Dataset:
         """データ件数を返す。"""
         return len(self.data)
 
-    def get_data(self, index: int) -> tuple:
-        """dataとlabelを返すだけの糖衣構文。"""
+    def get_data(self, index: int) -> typing.Tuple[typing.Any, typing.Any]:
+        """dataとlabelを返す。"""
         if self.labels is None:
             return self.data[index], None
-        return self.data[index], self.labels[index]
+        return self._get(self.data, index), self._get(self.labels, index)
+
+    def _get(self, data, index: int):
+        """指定indexのデータ/ラベルを返す。"""
+        if isinstance(data, dict):
+            # multiple input/output
+            return {k: v[index] for k, v in data.items()}
+        elif isinstance(data, list):
+            # multiple input/output
+            return [v[index] for v in data]
+        elif isinstance(data, pd.DataFrame):
+            assert len(data) == len(self)
+            return data.values[index]
+        else:
+            assert len(data) == len(self)
+            return data[index]
+
+    def iter(
+        self, folds: tk.validation.FoldsType
+    ) -> typing.Generator[typing.Tuple[Dataset, Dataset], None, None]:
+        """foldsに従って分割する。"""
+        for train_indices, val_indices in folds:
+            train_set = self.slice(train_indices)
+            val_set = self.slice(val_indices)
+            yield train_set, val_set
 
     def slice(self, rindex: typing.Sequence[int]) -> Dataset:
         """スライスを作成して返す。
-
         Args:
             rindex: インデックスの配列
-
         Returns:
             スライス後のDataset
-
         """
         rindex = np.array(rindex)
         return self.__class__(
@@ -79,10 +102,8 @@ class Dataset:
 
     def copy(self) -> Dataset:
         """コピーを作成して返す。
-
         Returns:
             コピー
-
         """
         return self.__class__(
             data=self.__class__.copy_field(self.data),
@@ -158,7 +179,7 @@ class Dataset:
 def split(dataset: Dataset, count: int, shuffle=False):
     """Datasetを指定個数に分割する。"""
     dataset_size = len(dataset)
-    sub_size = dataset_size // count
+    sub_size = -(-dataset_size // count)  # 端数切り上げ
     assert sub_size > 0
     indices = np.arange(dataset_size)
     if shuffle:
@@ -171,74 +192,135 @@ def split(dataset: Dataset, count: int, shuffle=False):
 
 class DataLoader:
     """データをモデルに渡す処理をするクラス。
-
     継承してカスタマイズする。ここでData Augmentationとかをする。
-    このクラス自体はステートレスにしておき、Iteratorが状態を持つ。
-
     Args:
         batch_size: バッチサイズ
         data_per_sample: sampleあたりのデータ数。mixupとかするなら2にする。
-        parallel: サンプル単位でスレッド並列するならTrue
-
+        parallel: self.get_dataの呼び出しを並列化するか否か。
     """
 
-    def __init__(self, batch_size: int = 16, data_per_sample=1, parallel: bool = True):
+    def __init__(self, batch_size: int = 16, data_per_sample=1, parallel=True):
         self.batch_size = batch_size
         self.data_per_sample = data_per_sample
         self.parallel = parallel
 
     def iter(
-        self, dataset: Dataset, shuffle: bool = False, use_horovod: bool = False
+        self,
+        dataset: Dataset,
+        shuffle: bool = False,
+        without_label: bool = False,
+        use_horovod: bool = False,
+        num_replicas_in_sync: int = 1,
     ) -> Iterator:
         """Iteratorを作成する。
-
         Args:
             dataset: データセット
             shuffle: シャッフルするのか否か
+            without_label: ラベルを使わない場合(predict)、Trueを指定する。
             use_horovod: 1エポックあたりのミニバッチ数(__len__の戻り値)の算出にHorovodを考慮するか否か。
-
+            num_replicas_in_sync: tf.distribute使用時の並列数(バッチサイズに掛け算する)
         Returns:
             Iterator
-
         """
-        if shuffle:
-            return RandomIterator(
-                self, dataset, self.batch_size, self.data_per_sample, use_horovod
-            )
-        assert self.data_per_sample == 1  # 挙動がややこしいので1のみ可とする
-        return SequentialIterator(self, dataset, self.batch_size, use_horovod)
+        assert len(dataset) >= 1
+        ds = self.get_ds(dataset, shuffle, without_label, num_replicas_in_sync)
+        bs = (
+            self.batch_size
+            * (tk.hvd.size() if use_horovod else 1)
+            * num_replicas_in_sync
+        )
+        steps = -(-len(dataset) // bs)
+        return Iterator(ds=ds, data_size=len(dataset), steps=steps)
 
-    def get_batch(self, dataset: Dataset, indices: typing.Sequence[int]):
-        """1件のミニバッチを取得する。
+    def get_ds(
+        self,
+        dataset: tk.data.Dataset,
+        shuffle: bool,
+        without_label: bool,
+        num_replicas_in_sync: int,
+    ) -> tf.data.Dataset:
+        """tf.data.Datasetを作る。"""
+        # 試しに1件呼び出してdtypeやshapeを推定 (ダサいが…)
+        exsample_data = self.get_data(dataset, 0)
+        exsample_sample = self.get_sample(
+            [exsample_data for _ in range(self.data_per_sample)]
+        )
+        assert (
+            len(exsample_data) == 2
+        ), f"get_data returns {len(exsample_data)} values, but expects to see 2 values. exsample_data={exsample_data}"
+        assert (
+            len(exsample_sample) == 2
+        ), f"get_sample returns {len(exsample_sample)} values, but expects to see 2 values. exsample_data={exsample_sample}"
+        data_tf_type = _get_tf_types(exsample_data)
+        sample_tf_type = _get_tf_types(exsample_sample)
 
-        Args:
-            dataset: データセット
-            indices: Iteratorが作成したindexの配列。
+        def get_data(i):
+            X, y = self.get_data(dataset, i)
+            # tf.numpy_functionがNone未対応なので0にしちゃう
+            if y is None:
+                y = np.int32(0)
+            # tf.numpy_functionがdict未対応なのでlistに展開してしまう
+            # (並び順はexsample_dataに合わせる(一応))
+            if isinstance(exsample_data[0], dict):
+                X = [X[k] for k in exsample_data[0]]
+            if isinstance(exsample_data[1], dict):
+                y = [y[k] for k in exsample_data[1]]
+            data = _flatten([X, y])
+            return data
 
-        Returns:
-            ミニバッチ。通常は入力データとラベルのtuple。
+        def get_sample(*data):
+            # flattenされたものをexsample_dataに従い戻す
+            if self.data_per_sample > 1:
+                for d in data:
+                    assert len(d) == self.data_per_sample, repr(data)
+                data_list = [
+                    _unflatten(exsample_data, [d[i] for d in data])
+                    for i in range(self.data_per_sample)
+                ]
+            else:
+                data_list = [_unflatten(exsample_data, data)]
+            assert len(data_list) == self.data_per_sample, repr(data_list)
 
-        """
-        # data
-        if self.parallel:
-            futures = [
-                tk.threading.get_pool().submit(self.get_data, dataset, i)
-                for i in indices
-            ]
-            data = [f.result() for f in futures]
+            X, y = self.get_sample(data_list)
+
+            # tf.numpy_functionがNone未対応なので0にしちゃう
+            if y is None:
+                y = np.int32(0)
+            # tf.numpy_functionがdict未対応なのでlistに展開してしまう
+            # (並び順はexsample_dataに合わせる(一応))
+            if isinstance(exsample_sample[0], dict):
+                X = [X[k] for k in exsample_sample[0]]
+            if isinstance(exsample_sample[1], dict):
+                y = [y[k] for k in exsample_sample[1]]
+
+            sample = _flatten([X, y])
+            return sample
+
+        def process1(i):
+            data = tf.numpy_function(get_data, inp=[i], Tout=data_tf_type)
+            return data
+
+        def process2(*data):
+            sample = tf.numpy_function(get_sample, inp=data, Tout=sample_tf_type)
+            sample = _unflatten_tensor(exsample_sample, sample)
+            if without_label:
+                return sample[0]
+            return sample
+
+        ds = tf.data.Dataset.from_tensor_slices(np.arange(len(dataset)))
+        ds = ds.shuffle(buffer_size=len(dataset)) if shuffle else ds
+        ds = ds.map(
+            process1,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE if self.parallel else None,
+        )
+        if self.data_per_sample > 1:
+            ds = ds.repeat().batch(self.data_per_sample)
         else:
-            data = [self.get_data(dataset, i) for i in indices]
-        # samples
-        samples = self.collate_data(data)
-        # batch
-        return self.collate_samples(samples)
-
-    def collate_data(self, data: list) -> list:
-        """self.data_per_sample個ずつ集約してget_sampleする処理。"""
-        return [
-            self.get_sample(data[i : i + self.data_per_sample])
-            for i in range(0, len(data), self.data_per_sample)
-        ]
+            ds = ds.repeat() if shuffle else ds  # バッチサイズを固定するため先にrepeat
+        ds = ds.map(process2)
+        ds = ds.batch(self.batch_size * num_replicas_in_sync)
+        ds = ds.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+        return ds
 
     def get_sample(self, data: list) -> tuple:
         """1件のサンプルを取得する。"""
@@ -248,171 +330,154 @@ class DataLoader:
 
     def get_data(self, dataset: Dataset, index: int):
         """1件のデータを取得する。
-
         Args:
             dataset: データセット
             batch: Datasetが返したデータをバッチサイズ分集めたもの
-
         Returns:
             1件のデータ。通常は入力データとラベルのtuple。
-
         """
         return dataset.get_data(index)
 
-    def collate_samples(self, batch: list) -> tuple:
-        """バッチサイズ分のデータを集約する処理。
 
-        Args:
-            batch: get_sample()の結果をバッチサイズ分集めたもの
+def _flatten(a):
+    """1次元配列化。"""
+    if isinstance(a, (list, tuple)):
+        return sum([_flatten(t) for t in a], [])
+    assert not isinstance(a, dict)
+    return [a]
 
-        Returns:
-            モデルに渡されるデータ。通常は入力データとラベルのtuple。
 
-        """
-        return tuple(self.collate_part(part) for part in zip(*batch))
+def _get_tf_types(exsample_data):
+    """exsample_dataからtf.dtypesの1次元リストを返す。"""
+    if exsample_data is None:
+        return [tf.int32]  # dummy
+    elif isinstance(exsample_data, tuple):
+        return sum([_get_tf_types(v) for v in exsample_data], [])
+    elif isinstance(exsample_data, list):
+        return sum([_get_tf_types(v) for v in exsample_data], [])
+    elif isinstance(exsample_data, dict):
+        # tf.numpy_functionがdict未対応なので、値の型だけリストで返す
+        return sum([_get_tf_types(v) for v in exsample_data.values()], [])
+    else:
+        return [tf.dtypes.as_dtype(exsample_data.dtype)]
 
-    def collate_part(self, part):
-        """サンプルごとのデータをバッチ分まとめる処理。"""
-        if isinstance(part[0], list):
-            part = [np.array([x[i] for x in part]) for i in range(len(part[0]))]
-        elif isinstance(part[0], dict):
-            part = {k: np.array([x[k] for x in part]) for k in part[0]}
+
+def _unflatten(exsample_data, data):
+    """flattenされたdataをexsample_dataに従い戻す。"""
+    if exsample_data is None:
+        return data  # dummy
+    elif isinstance(exsample_data, (tuple, list)):
+        lengths = [
+            len(v) if isinstance(v, (tuple, list, dict)) else 1 for v in exsample_data
+        ]
+        assert sum(lengths) == len(data), f"exsample_data={exsample_data} data={data}"
+        offsets = np.concatenate([[0], np.cumsum(lengths)[:-1]])
+        return tuple(
+            _unflatten(v, data[o : o + l])
+            for v, o, l in zip(exsample_data, offsets, lengths)
+        )
+    elif isinstance(exsample_data, dict):
+        assert len(exsample_data) == len(
+            data
+        ), f"exsample_data={exsample_data} data={data}"
+        return {k: _unflatten(v, d) for (k, v), d in zip(exsample_data.items(), data)}
+    else:
+        if isinstance(data, (tuple, list)):
+            assert len(data) == 1, f"exsample_data={exsample_data} data={data}"
+            data = data[0]
+        return np.asarray(data, dtype=exsample_data.dtype)
+
+
+def _unflatten_tensor(exsample_data, tensor):
+    """numpyのサンプルデータに従いtf.ensure_shapeする。"""
+    if exsample_data is None:
+        return tf.ensure_shape(tensor, ())  # dummy
+    elif isinstance(exsample_data, tuple):
+        if len(exsample_data) == len(tensor):
+            return tuple(_unflatten_tensor(v, t) for v, t in zip(exsample_data, tensor))
         else:
-            part = np.array(part)
-        return part
+            # tf.numpy_functionがdict未対応なので展開しているのでここで戻す
+            assert (
+                len(exsample_data) == 2
+            ), f"exsample_data={exsample_data} tensor={tensor}"
+            if isinstance(exsample_data[0], (tuple, list, dict)):
+                len1 = len(exsample_data[0])
+                X = _unflatten_tensor(exsample_data[0], tensor[:len1])
+            else:
+                len1 = 1
+                X = _unflatten_tensor(exsample_data[0], tensor[0])
+            if isinstance(exsample_data[1], (tuple, list, dict)):
+                len2 = len(exsample_data[1])
+                y = _unflatten_tensor(exsample_data[1], tensor[len1:])
+            else:
+                len2 = 1
+                y = _unflatten_tensor(exsample_data[1], tensor[len1])
+            assert len1 + len2 == len(
+                tensor
+            ), f"exsample_data={exsample_data} tensor={tensor}"
+            return X, y
+    elif isinstance(exsample_data, list):
+        assert len(exsample_data) == len(
+            tensor
+        ), f"exsample_data={exsample_data} tensor={tensor}"
+        return [_unflatten_tensor(v, t) for v, t in zip(exsample_data, tensor)]
+    elif isinstance(exsample_data, dict):
+        # tf.numpy_functionがdict未対応なのでtensorはlistになっている
+        assert len(exsample_data) == len(
+            tensor
+        ), f"exsample_data={exsample_data} tensor={tensor}"
+        return {
+            k: _unflatten_tensor(v, t)
+            for (k, v), t in zip(exsample_data.items(), tensor)
+        }
+    else:
+        return tf.ensure_shape(tensor, [None] * exsample_data.ndim)
 
 
-class Iterator(keras.utils.Sequence, metaclass=abc.ABCMeta):
-    """データをモデルに渡すクラス。
-
+@dataclasses.dataclass()
+class Iterator:
+    """データをモデルに渡すためのクラス。
     Args:
-        data_loader: データをモデルに渡す処理をするクラス
-        dataset: データセット
-        batch_size: バッチサイズ
-        use_horovod: 1エポックあたりのミニバッチ数(__len__の戻り値)の算出にHorovodを考慮するか否か。
-
-    Attributes:
-        seconds_per_step: 1ステップ当たりの実処理時間の指数移動平均値
-
+        ds: tf.data.Dataset
+        data_size: データ数
+        steps: 1エポックあたりのミニバッチ数
     """
 
-    def __init__(
-        self,
-        data_loader: DataLoader,
-        dataset: Dataset,
-        batch_size: int,
-        use_horovod: bool,
-    ):
-        self.data_loader = data_loader
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.use_horovod = use_horovod
-        self.epoch: int = 1
-        self.seconds_per_step: float = 0.0
+    ds: tf.data.Dataset
+    data_size: int
+    steps: int
 
-    def on_epoch_end(self) -> None:
-        """1エポック完了時の処理。"""
-        self.epoch += 1
-
-    def __len__(self) -> int:
-        """1エポックあたりのミニバッチ数を返す。"""
-        bs = self.batch_size * tk.hvd.size() if self.use_horovod else self.batch_size
-        return -(-len(self.dataset) // bs)
-
-    def __getitem__(self, index: int) -> tk.models.ModelIOType:
-        """ミニバッチを1つ返す。"""
-        start_time = time.perf_counter()
-
-        indices = self.sample_batch_indices(index)
-        batch = self.data_loader.get_batch(self.dataset, indices)
-
-        elapsed_time = time.perf_counter() - start_time
-        self.seconds_per_step = self.seconds_per_step * 0.99 + elapsed_time * 0.01
-        return batch
-
-    @abc.abstractmethod
-    def sample_batch_indices(self, index: int) -> typing.Sequence[int]:
-        """1ミニバッチ分のindexの配列を返す。"""
-
-    def __iter__(self):
-        """データを返す。"""
-        for i in range(len(self)):
-            yield self[i]
-
-    def run(self):
-        """データを返す。"""
-        while True:
-            for i in range(len(self)):
-                yield self[i]
-            self.on_epoch_end()
-
-
-class SequentialIterator(Iterator):
-    """順番にサンプリングするIterator。"""
-
-    def sample_batch_indices(self, index: int) -> typing.Sequence[int]:
-        """1ミニバッチ分のindexの配列を返す。"""
-        start = self.batch_size * index
-        end = start + self.batch_size
-        return list(range(start, min(end, len(self.dataset))))
-
-
-class RandomIterator(Iterator):
-    """シャッフルするIterator。"""
-
-    def __init__(
-        self,
-        data_loader: DataLoader,
-        dataset: Dataset,
-        batch_size: int,
-        data_per_sample: int,
-        use_horovod: bool,
-    ):
-        super().__init__(
-            data_loader=data_loader,
-            dataset=dataset,
-            batch_size=batch_size,
-            use_horovod=use_horovod,
-        )
-        self.data_per_sample = data_per_sample
-        self.gens = [
-            RandomIterator._generate_shuffled_indices(len(dataset))
-            for _ in range(self.data_per_sample)
-        ]
-        self.indices = [
-            [next(gen) for _ in range(len(self) * self.batch_size)] for gen in self.gens
-        ]
-
-    def on_epoch_end(self) -> None:
-        """1エポック完了時の処理。"""
-        super().on_epoch_end()
-        self.indices = [
-            [next(gen) for _ in range(len(self) * self.batch_size)] for gen in self.gens
-        ]
-
-    def sample_batch_indices(self, index: int) -> typing.Sequence[int]:
-        """1ミニバッチ分のindexの配列を返す。"""
-        offset = self.batch_size * index
-        return sum(
-            [indices[offset : offset + self.batch_size] for indices in self.indices], []
+    def to_str(self) -> str:
+        """情報を文字列化して返す。"""
+        return (
+            f"element_spec={self.ds.element_spec}"
+            f" data_size={self.data_size}"
+            f" steps={self.steps}"
         )
 
-    @staticmethod
-    def _generate_shuffled_indices(data_count):
-        """シャッフルしたインデックスのgenerator"""
-        indices = np.arange(data_count)
-        while True:
-            random.shuffle(indices)
-            yield from indices
 
+def mixup(
+    ds: tf.data.Dataset,
+    postmix_fn: typing.Callable = None,
+    num_parallel_calls: int = None,
+):
+    """tf.dataでのmixup: <https://arxiv.org/abs/1710.09412>
+    Args:
+        ds: 元のデータセット
+        postmix_fn: mixup後の処理
+        num_parallel_calls: premix_fnの並列数
+    """
 
-class WeightedRandomIterator(Iterator):
-    """重み付き乱数によるSampler。"""
+    @tf.function
+    def mixup_fn(*data):
+        r = tf.random.uniform((), 0, 1)
+        data = [
+            tf.cast(d[0], tf.float32) * r + tf.cast(d[1], tf.float32) * (1 - r)
+            for d in data
+        ]
+        return data if postmix_fn is None else postmix_fn(*data)
 
-    def sample_batch_indices(self, index: int) -> typing.Sequence[int]:
-        """1ミニバッチ分のindexの配列を返す。"""
-        del index
-        assert self.dataset.weights is not None
-        return random.choices(
-            range(len(self.dataset)), weights=self.dataset.weights, k=self.batch_size
-        )
+    ds = ds.repeat()
+    ds = ds.batch(2)
+    ds = ds.map(mixup_fn, num_parallel_calls=num_parallel_calls)
+    return ds
