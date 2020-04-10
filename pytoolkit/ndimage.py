@@ -347,9 +347,9 @@ def resize_short_side(
     if not expand and max(width, height) <= short_side:
         return rgb
     if width >= height:  # 横長
-        return resize(rgb, short_side, height * short_side // width, interp=interp)
+        return resize(rgb, short_side, short_side * width // height, interp=interp)
     else:  # 縦長
-        return resize(rgb, short_side*height//width, short_side, interp=interp)
+        return resize(rgb, short_side * height // width, short_side, interp=interp)
     
 
 def resize(
