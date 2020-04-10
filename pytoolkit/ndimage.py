@@ -304,8 +304,8 @@ def crop(rgb: np.ndarray, x: int, y: int, width: int, height: int) -> np.ndarray
 @numba.njit(fastmath=True, nogil=True)
 def center_crop(rgb: np.ndarray, cropx: int, cropy: int) -> np.ndarray:
     """中央切り抜き。"""
-    assert 0 <= cropx < rgb.shape[1]
-    assert 0 <= cropy < rgb.shape[0]
+    assert 0 <= cropx <= rgb.shape[1]
+    assert 0 <= cropy <= rgb.shape[0]
     
     height, width = rgb.shape[:2]
     startx = width//2-(cropx//2)
