@@ -967,6 +967,22 @@ def class_to_mask(classes: np.ndarray, class_colors: np.ndarray) -> np.ndarray:
     return np.asarray(class_colors)[classes]
 
 
+@numba.njit(fastmath=True, nogil=True)
+def ensure_channel_dim(img: np.ndarray) -> np.ndarray:
+    """shapeが(H, W)なら(H, W, 1)にして返す。それ以外ならそのまま返す。"""
+    if img.ndim == 2:
+        return np.expand_dims(img, axis=-1)
+    assert img.ndim == 3, str(img.shape)
+    return img
+
+
+@numba.njit(fastmath=True, nogil=True)
+def to_uint8(x):
+    """floatからnp.uint8への変換。"""
+    # np.clipは未実装: https://github.com/numba/numba/pull/3468
+    return np.minimum(np.maximum(x, 0), 255).astype(np.uint8)
+
+
 def hex_to_imagehash(hexstr: str) -> "Imagehashmanager":
     """16進数の文字列からImagehashmanagerオブジェクトを作る
 
