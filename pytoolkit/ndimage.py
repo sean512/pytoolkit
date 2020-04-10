@@ -302,6 +302,19 @@ def crop(rgb: np.ndarray, x: int, y: int, width: int, height: int) -> np.ndarray
 
 
 @numba.njit(fastmath=True, nogil=True)
+def center_crop(rgb: np.ndarray, cropx: int, cropy: int) -> np.ndarray:
+    """中央切り抜き。"""
+    assert 0 <= cropx < rgb.shape[1]
+    assert 0 <= cropy < rgb.shape[0]
+    
+    height, width = rgb.shape[:2]
+    startx = width//2-(cropx//2)
+    starty = height//2-(cropy//2)
+    
+    return rgb[starty:starty+cropy, startx:startx+cropx, :]
+
+
+@numba.njit(fastmath=True, nogil=True)
 def flip_lr(rgb: np.ndarray) -> np.ndarray:
     """左右反転。"""
     return rgb[:, ::-1, :]
@@ -325,6 +338,19 @@ def resize_long_side(
     else:  # 縦長
         return resize(rgb, width * long_side // height, long_side, interp=interp)
 
+
+def resize_short_side(
+    rgb: np.ndarray, short_side: int, expand=True, interp="lanczos"
+) -> np.ndarray:
+    """短辺の長さを指定したアスペクト比維持のリサイズ。"""
+    height, width = rgb.shape[:2]
+    if not expand and max(width, height) <= short_side:
+        return rgb
+    if width >= height:  # 横長
+        return resize(rgb, short_side, height * short_side // width, interp=interp)
+    else:  # 縦長
+        return resize(rgb, short_side*height//width, short_side, interp=interp)
+    
 
 def resize(
     rgb: np.ndarray, width: int, height: int, padding=None, interp="lanczos"
@@ -870,6 +896,12 @@ def cut_mix(sample1: tuple, sample2: tuple, beta: float = 1.0) -> tuple:
 def preprocess_tf(rgb):
     """RGB値の-1 ～ +1への変換"""
     return rgb.astype(np.float32) / 127.5 - 1.0
+
+
+@numba.njit(fastmath=True, nogil=True)
+def preprocess_torch(rgb):
+    """RGB値の0 ～ +1への変換"""
+    return rgb.astype(np.float32) / 255.
 
 
 # @numba.njit(fastmath=True, nogil=True)
