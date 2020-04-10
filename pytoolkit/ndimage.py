@@ -346,6 +346,8 @@ def resize_short_side(
     height, width = rgb.shape[:2]
     if not expand and max(width, height) <= short_side:
         return rgb
+    if min(width,height) == short_side:
+        return rgb
     if width >= height:  # 横長
         return resize(rgb, short_side, short_side * width // height, interp=interp)
     else:  # 縦長
